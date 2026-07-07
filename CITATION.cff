@@ -1,0 +1,13 @@
+cff-version: 1.2.0
+message: "If you use elphgap, please cite it via the Zenodo DOI (added on first release)."
+title: "elphgap: GPU-accelerated anisotropic Migdal-Eliashberg gap solver"
+type: software
+authors:
+  - family-names: "Oberländer"
+    given-names: "Alexander"
+  - family-names: "Kristmann"
+    given-names: "Claudius"
+version: 0.1.0
+license: GPL-3.0-or-later
+repository-code: "https://github.com/KristmannTechnologies/Elphgap"
+keywords: [superconductivity, eliashberg, electron-phonon, jax, gpu]
