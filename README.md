@@ -1,5 +1,7 @@
 # elphgap — GPU-accelerated anisotropic Migdal-Eliashberg gap solver
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21284954.svg)](https://doi.org/10.5281/zenodo.21284954)
+
 **elphgap** solves the (an)isotropic Migdal-Eliashberg gap equations on the
 imaginary (Matsubara) axis for phonon-mediated superconductors — in
 [JAX](https://github.com/google/jax), on CPU or GPU (batched over materials

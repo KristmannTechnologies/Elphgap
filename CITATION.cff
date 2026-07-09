@@ -1,5 +1,14 @@
 cff-version: 1.2.0
-message: "If you use elphgap, please cite it via the Zenodo DOI (added on first release)."
+message: "If you use elphgap, please cite it via the Zenodo DOI below."
+doi: 10.5281/zenodo.21284954
+date-released: "2026-07-09"
+identifiers:
+  - type: doi
+    value: "10.5281/zenodo.21284954"
+    description: "Version DOI for v0.1.0"
+  - type: doi
+    value: "10.5281/zenodo.21284953"
+    description: "Concept DOI (all versions)"
 title: "elphgap: GPU-accelerated anisotropic Migdal-Eliashberg gap solver"
 type: software
 authors:
