@@ -40,6 +40,18 @@ def test_allen_dynes_hand_value():
     )
 
 
+def test_allen_dynes_f2_hand_value():
+    # Shape correction actually exercised (r != 1): lam=1, mu*=0.1, w_log=10,
+    # w_2=20 meV -> r=2. Hand evaluation:
+    # L2 = 1.82*(1+0.63)*2 = 5.933200; L2^2 = 35.202862
+    # f2 = 1 + (2-1)*1/(1+35.202862) = 1.02762213
+    # f1 = 1.050680, exp(-2.482100) = 0.0835676 (as in the r=1 test)
+    expected_mev = 1.050680 * 1.0276221 * (10.0 / 1.2) * 0.0835676
+    assert tc_allen_dynes(1.0, 10.0, 20.0, mu_star=0.10) == pytest.approx(
+        expected_mev * MEV_TO_K, rel=1e-4
+    )
+
+
 def test_mcmillan_excludes_strong_coupling_factors():
     # McMillan = AD exponential with f1 = f2 = 1; for lam=1, mu*=0.1, w_log=10 meV:
     # Tc = (10/1.2) * exp(-2.482100) = 0.696434 meV (no f1 = 1.050680 factor).
@@ -79,3 +91,43 @@ def test_eliashberg_censored_for_weak_coupling():
     omega, a2f = einstein_spectrum(0.25, 10.0)
     res = tc_eliashberg(omega, a2f, mu_star=0.13, n_max=512)
     assert res.censored
+
+
+def test_t_max_kelvin_reachable_tc_not_rejected():
+    """Regression: a Tc below t_max_kelvin must be found even when the bracket
+    doubling would overshoot t_max (lam=1, w_E=100 meV -> Tc ~93 K; the
+    unclamped bracket jumped ~58 K -> ~116 K and raised at t_max=100 K)."""
+    omega, a2f = einstein_spectrum(1.0, 100.0)
+    unlimited = tc_eliashberg(omega, a2f, mu_star=0.10, n_max=128).tc_kelvin
+    assert 90.0 < unlimited < 100.0  # precondition for the clamp scenario
+    capped = tc_eliashberg(omega, a2f, mu_star=0.10, n_max=128, t_max_kelvin=100.0)
+    assert capped.tc_kelvin == pytest.approx(unlimited, rel=2e-3)
+    with pytest.raises(RuntimeError, match="t_max_kelvin"):
+        tc_eliashberg(omega, a2f, mu_star=0.10, n_max=128, t_max_kelvin=50.0)
+
+
+def test_t_max_kelvin_initial_bracket_clamped():
+    """Regression: with t_max between the floor and the FIRST bracket endpoint
+    (2*floor), the expansion loop never ran and bisection silently returned a
+    Tc ABOVE t_max_kelvin. n_max=31 puts the floor at ~60 K, true Tc ~93 K:
+    t_max=80 K must raise, not return ~93 K."""
+    omega, a2f = einstein_spectrum(1.0, 100.0)
+    tc = tc_eliashberg(omega, a2f, mu_star=0.10, n_max=31).tc_kelvin
+    assert tc > 80.0  # precondition: Tc really above the cap
+    with pytest.raises(RuntimeError, match="t_max_kelvin"):
+        tc_eliashberg(omega, a2f, mu_star=0.10, n_max=31, t_max_kelvin=80.0)
+
+
+def test_omega_grid_validation():
+    """omega <= 0 or a non-increasing grid must fail loudly at the API boundary,
+    not as NaN moments / eigensolver errors much later."""
+    omega = np.linspace(0.0, 10.0, 100)  # omega[0] = 0: singular kernels
+    a2f = np.ones_like(omega)
+    with pytest.raises(ValueError, match="strictly positive"):
+        moments(omega, a2f)
+    with pytest.raises(ValueError, match="strictly positive"):
+        tc_eliashberg(omega, a2f)
+    with pytest.raises(ValueError, match="strictly increasing"):
+        moments(np.array([1.0, 3.0, 2.0]), np.ones(3))
+    with pytest.raises(ValueError, match="finite"):
+        moments(np.array([1.0, 2.0, np.inf]), np.ones(3))

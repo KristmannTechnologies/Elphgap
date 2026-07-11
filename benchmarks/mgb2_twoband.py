@@ -28,7 +28,7 @@ CAVEATS (honest):
 Run:  python benchmarks/mgb2_twoband.py
 """
 import numpy as np
-from elphgap.eliashberg_aniso import solve_gap_at_T, tc_aniso
+from elphgap.eliashberg_aniso import solve_gap_at_T, tc_aniso, tc_aniso_linearized
 
 # --- literature MgB2 2-band model -------------------------------------------------
 LAM = np.array([[1.02, 0.21],     # [[σσ, σπ],
@@ -80,20 +80,23 @@ def gaps_at(omega, a, mu, t_kelvin=4.0):
 def main():
     print(__doc__.split("Run:")[0])
     print(f"  {TARGET}\n")
-    print(f"{'ω_E[meV]':>8} {'μ*_std':>7} {'Δσ[meV]':>9} {'Δπ[meV]':>9} {'Tc[K]':>7} {'conv':>5}")
+    # Tc_lin = linearized-kernel bisection (exact, recommended for quoting Tc);
+    # Tc_gap = nonlinear gap-collapse heuristic (biased slightly high near Tc).
+    print(f"{'ω_E[meV]':>8} {'μ*_std':>7} {'Δσ[meV]':>9} {'Δπ[meV]':>9} {'Tc_lin[K]':>9} {'Tc_gap[K]':>9} {'conv':>5}")
     for w_e in (60.0, 67.0, 75.0):
         for mu_std in (0.10, 0.13, 0.16):
             omega, a = build_pairs(w_e)
             mu = mu_matrix(mu_std)
             ds, dp, ok = gaps_at(omega, a, mu, t_kelvin=4.0)
             try:
+                tc_lin = tc_aniso_linearized(omega, a, W, mu_star=mu, n_max=512).tc_kelvin
                 tc = tc_aniso(omega, a, W, mu_star=mu, n_max=512)
-            except Exception as e:
-                tc = float("nan")
+            except Exception:
+                tc_lin, tc = float("nan"), float("nan")
             if ok:
-                print(f"{w_e:8.0f} {mu_std:7.2f} {ds:9.2f} {dp:9.2f} {tc:7.1f} {'yes':>5}")
+                print(f"{w_e:8.0f} {mu_std:7.2f} {ds:9.2f} {dp:9.2f} {tc_lin:9.1f} {tc:9.1f} {'yes':>5}")
             else:
-                print(f"{w_e:8.0f} {mu_std:7.2f} {'--':>9} {'--':>9} {tc:7.1f} {'NO':>5}")
+                print(f"{w_e:8.0f} {mu_std:7.2f} {'--':>9} {'--':>9} {tc_lin:9.1f} {tc:9.1f} {'NO':>5}")
 
     print("\nInterpretation:")
     print("  - Two distinct gaps (Δσ >> Δπ) across the whole scan = the solver")

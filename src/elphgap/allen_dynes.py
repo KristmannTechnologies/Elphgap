@@ -17,11 +17,16 @@ from __future__ import annotations
 
 import numpy as np
 
+from .grids import validate_grid
 from .units import MEV_TO_K
 
 
 def moments(omega: np.ndarray, a2f: np.ndarray) -> tuple[float, float, float]:
-    """Return (lambda, omega_log [meV], omega_2 [meV]) by trapezoidal integration."""
+    """Return (lambda, omega_log [meV], omega_2 [meV]) by trapezoidal integration.
+
+    omega must be strictly positive and increasing (validated): a2f/omega and
+    log(omega) are singular at omega = 0."""
+    omega = validate_grid(omega)
     lam = 2.0 * np.trapezoid(a2f / omega, omega)
     wlog = np.exp(2.0 / lam * np.trapezoid(a2f * np.log(omega) / omega, omega))
     w2 = np.sqrt(2.0 / lam * np.trapezoid(a2f * omega, omega))

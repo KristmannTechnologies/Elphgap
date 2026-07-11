@@ -69,7 +69,12 @@ def report_gap(tag, path, split_mev=4.5):
     if w[hiM].sum() > 0:
         print(f"  sig(>={split_mev}): Δ={np.average(g[hiM], weights=w[hiM]):.2f} meV  "
               f"frac={w[hiM].sum()/w.sum()*100:.0f}%")
-        print("  => BIMODAL (two-gap) structure detected" if w[lo].sum() > 0
+        # NOTE: a fixed-threshold split is NOT a modality test — any weight on
+        # both sides (broad unimodal peak, noisy tail) lands here. Judge
+        # bimodality from the histogram above; the split just summarizes the
+        # sigma/pi means for MgB2, where the two-gap structure is known.
+        print(f"  => weight on both sides of the {split_mev} meV split "
+              "(inspect histogram for actual bimodality)" if w[lo].sum() > 0
               else "  => single high cluster")
     else:
         print(f"  sig(>={split_mev}): EMPTY -- no second (sigma) gap")

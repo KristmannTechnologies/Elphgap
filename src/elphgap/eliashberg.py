@@ -19,10 +19,14 @@ S = D^{-1/2} B D^{-1/2} and solved with a dense symmetric eigensolver.
 
 Conventions: omega in meV, T in K at the public API (converted internally to
 meV). Matsubara cutoff omega_c = cutoff_factor * max(omega); the matrix size
-N = omega_c / (2*pi*T) is capped at n_max, which sets a material-dependent
-floor on resolvable Tc (reported via the `censored` flag). mu_star is used at
-this cutoff for both Eliashberg and Allen-Dynes (standard practice, exact
-mu* cutoff-rescaling neglected).
+N = ceil(omega_c / (2*pi*T)) is capped at n_max, which sets a material-dependent
+floor on resolvable Tc (reported via the `censored` flag). The ceil slightly
+overshoots the strict count of positive frequencies below omega_c
+(floor(omega_c/(2*pi*T) + 1/2)) — a deliberate at-least-omega_c convention,
+shared by the anisotropic solvers. The Z_n sum above is the exact closed form
+of the INFINITE Matsubara sum (it telescopes), i.e. Z is not truncated at the
+matrix size. mu_star is used at this cutoff for both Eliashberg and
+Allen-Dynes (standard practice, exact mu* cutoff-rescaling neglected).
 """
 
 from __future__ import annotations
@@ -32,6 +36,7 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.linalg import eigh
 
+from .grids import validate_grid
 from .units import K_TO_MEV, MEV_TO_K
 
 
@@ -56,6 +61,7 @@ def max_eigenvalue(
     n_max: int,
 ) -> float:
     """Largest eigenvalue rho(T) of the linearized Eliashberg kernel."""
+    omega = validate_grid(omega)
     n_mat = _matrix_size(t_mev, omega_c, n_max)
     lam = lambda_table(omega, a2f, t_mev, 2 * n_mat)
     n = np.arange(n_mat)
@@ -84,6 +90,7 @@ def tc_eliashberg(
     rtol: float = 1e-3,
 ) -> TcResult:
     """Tc from bisection on rho(T) = 1. rho decreases monotonically with T."""
+    omega = validate_grid(omega)
     omega_c = cutoff_factor * float(omega[-1])
     # Resolvable floor: temperature at which the (capped) matrix still reaches omega_c.
     t_floor_mev = omega_c / (2.0 * np.pi * n_max)
@@ -95,14 +102,18 @@ def tc_eliashberg(
     rho_floor = rho(t_floor_k)
     if rho_floor < 1.0:
         return TcResult(tc_kelvin=0.0, censored=True, rho_at_floor=rho_floor)
+    if t_floor_k >= t_max_kelvin:
+        raise RuntimeError(f"rho(T) > 1 already at the resolvable floor {t_floor_k} K >= t_max_kelvin={t_max_kelvin} K")
 
+    # Bracket endpoints never exceed t_max_kelvin, so bisection cannot return
+    # a Tc above the requested maximum.
     t_lo = t_floor_k
-    t_hi = 2.0 * t_floor_k
+    t_hi = min(2.0 * t_floor_k, t_max_kelvin)
     while rho(t_hi) > 1.0:
+        if t_hi >= t_max_kelvin:
+            raise RuntimeError(f"rho(T) still > 1 at t_max_kelvin={t_max_kelvin} K; Tc above requested maximum")
         t_lo = t_hi
-        t_hi *= 2.0
-        if t_hi > t_max_kelvin:
-            raise RuntimeError(f"Tc bracket exceeded {t_max_kelvin} K")
+        t_hi = min(2.0 * t_hi, t_max_kelvin)
 
     while (t_hi - t_lo) / t_hi > rtol:
         t_mid = 0.5 * (t_lo + t_hi)

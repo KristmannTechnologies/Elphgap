@@ -26,10 +26,11 @@ paths.
 shipped tests exercise K ≤ 2; a literature λᵢⱼ matrix can be encoded as
 single-mode spectra, see `benchmarks/mgb2_twoband.py`), it
 computes superconducting gaps Δ(T) and Tc, plus Allen-Dynes / McMillan
-estimates from spectral moments. Isotropic Tc is found by bisection on the
-leading eigenvalue of the linearized kernel; anisotropic Tc is currently
-located by bisection on the collapse of the full nonlinear gap solution —
-a threshold-based heuristic (see *Scope and limitations*).
+estimates from spectral moments. Tc is found by bisection on the leading
+eigenvalue of the linearized kernel — isotropic (`tc_eliashberg`) and
+anisotropic (`tc_aniso_linearized`, the recommended way to quote an
+anisotropic Tc). A nonlinear gap-collapse bisection (`tc_aniso`) is also
+available; it is a threshold heuristic (see *Scope and limitations*).
 
 **What it does NOT do:** it does not compute the electron-phonon coupling
 itself. Garbage in, garbage out — the physical quality of Tc is bounded by
@@ -107,9 +108,9 @@ results, not as claims reproducible from a bare clone;
 
 | Check | Result |
 |---|---|
-| Isotropic limit of aniso solver vs isotropic solver | Tc agrees to within ~6 % (nonlinear gap-collapse Tc vs. linearized-kernel Tc — see limitations; pinned by tests) |
+| Isotropic limit of aniso solver vs isotropic solver | `tc_aniso_linearized` reduces to the isotropic solver EXACTLY (same matrix, same closed-form Z; pinned to rel. 1e-6 by test). The nonlinear gap-collapse `tc_aniso` tracks it to a few % (see limitations; ≤0.4 % on the MgB₂ scan) |
 | NumPy ↔ JAX parity (iso + aniso) | gaps agree to rel. 1e-3, aniso Tc to ~4 %, batched-iso Tc to ~2 % on synthetic spectra (tests); the same batched path is additionally checked against DB materials when the external BETE-NET DB is present (auto-skipped otherwise) |
-| MgB₂ two-band literature model (Golubov 2002) | two separated gaps, Δσ≈7–9 meV (exp: ~7); Tc high by the known single-Einstein-mode simplification — trend scan, no fit (`benchmarks/mgb2_twoband.py`) |
+| MgB₂ two-band literature model (Golubov 2002) | two separated gaps, Δσ≈7–11 meV over the ω_E/μ* scan (exp: ~7, closest at μ*=0.16); Tc high by the known single-Einstein-mode simplification — trend scan, no fit (`benchmarks/mgb2_twoband.py`) |
 | Spectral moments | unit-tested to 1e-3 against analytic Einstein-mode values (tests); parity ≲1e-3 vs. BETE-NET reference values over 806 materials **(external data)** (`benchmarks/db_parity.py`) |
 | Tc(ME) vs. Allen-Dynes across 806 materials | median ratio 1.20; AD accurate ~10 % for λ≳0.8, up to 2× off at λ≈0.35 **(external data)** |
 | MgB₂ two-gap vs. EPW | `benchmarks/epw_gap_histogram.py` post-processes EPW's anisotropic gap output for side-by-side comparison with the two-band model — bring your own EPW run; **no head-to-head comparison is shipped** |
@@ -149,13 +150,23 @@ database solves in ~440 s (~1.8 materials/s); float64 at n_max=1024 is
 
 - Imaginary-axis (Matsubara) formulation; no real-axis continuation
   (spectral functions/tunneling DOS) yet.
-- **Anisotropic Tc is a threshold heuristic**: bisection on where the
-  nonlinear gap collapses below `gap_threshold_mev`. Near Tc the
-  fixed-point iteration slows down critically, which can bias the extracted
-  Tc high by a few percent at default settings (tighten `gap_threshold_mev`
-  and raise `max_iter` to trade accuracy against cost; gap values Δ(T) away
-  from Tc are unaffected). A linearized-kernel eigenvalue bisection for the
-  anisotropic case is planned. Isotropic Tc does not have this caveat.
+- **`tc_aniso` (gap-collapse) is a threshold heuristic**: bisection on where
+  the nonlinear gap collapses below `gap_threshold_mev`. Near Tc the
+  fixed-point iteration slows down critically, which biases the extracted Tc
+  high by a few percent at default settings (gap values Δ(T) away from Tc
+  are unaffected). Un-converged states are NOT classified by their transient
+  gap magnitude — no finite iterate can certify SC vs. normal near marginal
+  stability — but by the linearized kernel's leading eigenvalue at that
+  temperature (the exact criterion). Without that guard, a slowly decaying
+  normal-state transient near the resolvable floor was misclassified as
+  superconducting (a categorical error, not a percent-level bias; pinned by
+  regression tests in both backends). Prefer **`tc_aniso_linearized`** to
+  quote Tc: it bisects the leading eigenvalue of the linearized kernel,
+  exactly like the isotropic solver, and reports sub-floor materials as
+  censored.
+- ω-grids must be strictly positive and increasing (the a2F/ω moments and
+  Matsubara kernels are singular at ω=0); the public entry points validate
+  this and fail with an actionable error instead of returning NaN.
 - Inputs are assumed **harmonic**; strongly anharmonic soft-mode systems can
   shift λ substantially (known field-wide caveat — SSCHA-class corrections
   are upstream of this solver).

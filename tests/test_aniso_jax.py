@@ -37,6 +37,9 @@ def test_solve_parity_two_pocket():
     # gap per pocket at n=0 must agree
     assert np.abs(dj[0, 0]) == pytest.approx(np.abs(st.delta[0, 0]), rel=1e-3, abs=1e-3)
     assert np.abs(dj[1, 0]) == pytest.approx(np.abs(st.delta[1, 0]), rel=1e-3, abs=1e-3)
+    # Z parity too: Z is a returned observable (mass renormalization), not
+    # just an internal variable, so pin it as well.
+    assert np.allclose(zj, st.z, rtol=1e-4, atol=1e-4)
 
 
 def test_solve_parity_isotropic():
@@ -62,9 +65,43 @@ def test_isotropic_spectrum_band_resolved_mu_parity():
 def test_tc_parity_two_pocket():
     # Same iteration budget in both so the gap-collapse near Tc is resolved
     # consistently (critical slowing-down needs many iters); both use the
-    # threshold-only SC criterion. Tc via gap-collapse is threshold-sensitive,
+    # threshold-based SC criterion. Tc via gap-collapse is threshold-sensitive,
     # hence the few-percent tolerance.
     o, pairs, w = two_pocket()
     tcn = tc_np(o, pairs, w, mu_star=0.10, n_max=256, max_iter=8000)
     tcj = tc_jx(o, pairs, w, mu_star=0.10, n_max=256, n_iter=8000)
     assert tcj == pytest.approx(tcn, rel=0.04)
+
+
+def test_jax_weak_coupling_floor_no_false_positive():
+    """The JAX path has no convergence flag, so its floor decision uses the
+    linearized eigenvalue: the lam=0.35 normal-state transient (numpy
+    regression test) must classify as 0 K here too."""
+    o, a = einstein(0.35, 20.0)
+    assert tc_jx(o, a, np.array([1.0]), mu_star=0.10, n_max=512) == 0.0
+
+
+def test_jax_unconverged_below_threshold_uses_eigenvalue_guard():
+    """Mirror of the numpy guard test: with a tiny seed and a tiny fixed
+    iteration budget the gap never grows past the threshold, so the bracket
+    would collapse onto the floor (~1.5 K instead of ~12.7 K). Sub-threshold
+    iterates must be routed through the linearized-eigenvalue criterion."""
+    from elphgap import tc_eliashberg
+
+    o, a = einstein(0.8, 20.0)
+    tc_ref = tc_eliashberg(o, a, mu_star=0.10, n_max=256).tc_kelvin
+    tc = tc_jx(o, a, np.array([1.0]), mu_star=0.10, n_max=256,
+               delta0_mev=1e-4, n_iter=5)
+    assert tc == pytest.approx(tc_ref, rel=0.02)
+
+
+def test_jax_marginal_sc_floor_not_censored():
+    """Converse guard direction: a marginally unstable (rho barely > 1),
+    resolvable superconductor must NOT be censored to 0 K just because the
+    fixed iteration budget cannot grow the mode — lam=0.36 has a genuine
+    sub-kelvin Tc just above the floor."""
+    o, a = einstein(0.36, 20.0)
+    tcn = tc_np(o, a, np.array([1.0]), mu_star=0.10, n_max=512)
+    tcj = tc_jx(o, a, np.array([1.0]), mu_star=0.10, n_max=512)
+    assert tcn > 0.0 and tcj > 0.0
+    assert tcj == pytest.approx(tcn, rel=0.08)

@@ -34,15 +34,9 @@ else:
 import jax.numpy as jnp
 import numpy as np
 
+from .grids import trapezoid_weights as _trapezoid_weights
+from .grids import validate_grid
 from .units import MEV_TO_K
-
-
-def _trapezoid_weights(x: np.ndarray) -> np.ndarray:
-    w = np.zeros_like(x)
-    w[0] = 0.5 * (x[1] - x[0])
-    w[-1] = 0.5 * (x[-1] - x[-2])
-    w[1:-1] = 0.5 * (x[2:] - x[:-2])
-    return w
 
 
 def pad_batch(materials, grid_pad_to: int | None = None):
@@ -56,13 +50,14 @@ def pad_batch(materials, grid_pad_to: int | None = None):
     a2f = np.zeros((len(materials), g))
     w = np.zeros((len(materials), g))
     for i, m in enumerate(materials):
-        k = len(m.omega)
-        omega[i, :k] = m.omega
+        grid = validate_grid(m.omega, name=f"omega[{m.comp}]")
+        k = len(grid)
+        omega[i, :k] = grid
         a2f[i, :k] = m.a2f
-        w[i, :k] = _trapezoid_weights(m.omega)
+        w[i, :k] = _trapezoid_weights(grid)
         # benign tail values (never weighted): keep omega positive to avoid 0-division
         if k < g:
-            omega[i, k:] = m.omega[-1]
+            omega[i, k:] = grid[-1]
     return jnp.asarray(omega), jnp.asarray(a2f), jnp.asarray(w)
 
 

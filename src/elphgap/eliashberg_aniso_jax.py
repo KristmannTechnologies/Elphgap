@@ -31,32 +31,37 @@ from functools import partial
 import jax.numpy as jnp
 import numpy as np
 
+from .eliashberg_aniso import _z_tail, lambda_kernel, max_eigenvalue_aniso
+from .grids import validate_grid
 from .units import K_TO_MEV, MEV_TO_K
 
 
-def _build_lambda_pairs(omega, a2f_pairs, t_mev, n_mat):
-    """λ kernels folded onto (K,K,N,N): returns (lam_abs, lam_sum) as jnp arrays.
+def _build_lambda_pairs(omega, a2f_pairs, w, t_mev, n_mat):
+    """λ kernels folded onto (K,K,N,N): returns (lam_abs, lam_sum, z_tail) as jnp arrays.
 
     Built once per temperature on host (numpy) — cheap relative to the iteration —
-    then handed to the jit'd step. a2f_pairs: (K,K,G) array.
+    then handed to the jit'd step. a2f_pairs: (K,K,G) array. z_tail is the exact
+    Z-sum tail beyond the truncated matrix (see eliashberg_aniso._z_tail),
+    iteration-independent, shape (K,N).
     """
-    jmax = 2 * n_mat
-    nu = 2.0 * np.pi * t_mev * np.arange(jmax + 1)
-    g = 2.0 * omega / (nu[:, None] ** 2 + omega[None, :] ** 2)  # (M,G)
-    lam = np.trapezoid(g[None, None] * a2f_pairs[:, :, None, :], omega, axis=3)  # (K,K,M)
+    # Weighted-einsum contraction (see lambda_kernel) — the naive (K,K,M,G)
+    # broadcast before integration is a multi-GB temporary at K~20.
+    lam = lambda_kernel(omega, a2f_pairs, t_mev, 2 * n_mat)  # (K,K,M)
     n = np.arange(n_mat)
     abs_idx = np.abs(n[:, None] - n[None, :])
     sum_idx = n[:, None] + n[None, :] + 1
     lam_abs = lam[:, :, abs_idx]  # (K,K,N,N)
     lam_sum = lam[:, :, sum_idx]
-    return jnp.asarray(lam_abs), jnp.asarray(lam_sum)
+    z_tail = _z_tail(lam, w, n_mat)  # (K,N)
+    return jnp.asarray(lam_abs), jnp.asarray(lam_sum), jnp.asarray(z_tail)
 
 
 @partial(jax.jit, static_argnames=("n_iter",))
-def _iterate(lam_abs, lam_sum, w, wn, t_mev, mu_star, delta0, mixing, n_iter):
+def _iterate(lam_abs, lam_sum, z_tail, w, wn, t_mev, mu_star, delta0, mixing, n_iter):
     """Damped fixed-point for Δ(k,n), Z(k,n). Fixed n_iter for jit-friendliness.
 
-    lam_abs/lam_sum: (K,K,N,N); w: (K,); wn: (N,). Kernels:
+    lam_abs/lam_sum: (K,K,N,N); z_tail: (K,N) exact Z-sum tail beyond the
+    truncated matrix (numpy-reference parity); w: (K,); wn: (N,). Kernels:
       Z:  (lam_abs - lam_sum) contracted with ω_n'/R   (odd fold)
       ZΔ: (lam_abs + lam_sum - 2μ*) contracted with Δ_n'/R  (even fold)
     """
@@ -76,7 +81,7 @@ def _iterate(lam_abs, lam_sum, w, wn, t_mev, mu_star, delta0, mixing, n_iter):
         # acc_z[ki,n] = Σ_kj w[kj] Σ_n' kz[ki,kj,n,n'] gz[kj,n']  (w indexed by j=kj)
         acc_z = jnp.einsum("j,ijnm,jm->in", w, kz, gz)
         acc_zd = jnp.einsum("j,ijnm,jm->in", w, kd, gd)
-        new_z = 1.0 + (jnp.pi * t_mev / wn)[None, :] * acc_z
+        new_z = 1.0 + (jnp.pi * t_mev / wn)[None, :] * (acc_z + z_tail)
         new_zd = (jnp.pi * t_mev) * acc_zd
         new_delta = new_zd / new_z
         return ((1 - mixing) * delta + mixing * new_delta,
@@ -94,7 +99,7 @@ def solve_gap_at_T(
 ):
     """Δ(k,n), Z(k,n) at fixed T. Returns (delta, z, max_gap_mev) with numpy delta."""
     t_mev = t_kelvin * K_TO_MEV
-    omega = np.asarray(omega, dtype=np.float64)
+    omega = validate_grid(omega)
     weights = np.asarray(weights, dtype=np.float64)
     a2f_pairs = np.asarray(a2f_pairs, dtype=np.float64)
     if a2f_pairs.ndim == 1:
@@ -109,8 +114,8 @@ def solve_gap_at_T(
     w = w / w.sum()
     wn = np.pi * t_mev * (2 * np.arange(n_mat) + 1)
 
-    lam_abs, lam_sum = _build_lambda_pairs(omega, np.asarray(a2f_pairs, dtype=np.float64), t_mev, n_mat)
-    delta, z = _iterate(lam_abs, lam_sum, jnp.asarray(w), jnp.asarray(wn),
+    lam_abs, lam_sum, z_tail = _build_lambda_pairs(omega, np.asarray(a2f_pairs, dtype=np.float64), w, t_mev, n_mat)
+    delta, z = _iterate(lam_abs, lam_sum, z_tail, jnp.asarray(w), jnp.asarray(wn),
                         t_mev, mu_star, delta0_mev, mixing, n_iter)
     delta = np.asarray(delta)
     return delta, np.asarray(z), float(np.max(np.abs(delta)))
@@ -120,23 +125,49 @@ def tc_aniso(
     omega, a2f_pairs, weights, mu_star=0.10, gap_threshold_mev=1e-3,
     cutoff_factor=10.0, n_max=512, t_max_kelvin=2000.0, rtol=2e-3, **solve_kw,
 ):
-    """Tc [K] via bisection; lower bracket from the Matsubara floor (see numpy ref)."""
-    omega = np.asarray(omega, dtype=np.float64)
+    """Tc [K] via bisection; lower bracket from the Matsubara floor (see numpy ref).
+
+    Same gap-collapse heuristic as the numpy tc_aniso (biased high by a few
+    percent near Tc; prefer eliashberg_aniso.tc_aniso_linearized to quote Tc).
+    The fixed-n_iter solver has no convergence flag, and near marginal
+    stability (rho ~ 1) no finite iterate can certify the categorical floor
+    decision either way — a decaying normal-state transient of the seed can
+    sit above the threshold, and a marginally unstable mode can stay below
+    its seed for arbitrarily many damped iterations. The floor decision
+    (bisect vs. report 0) is therefore made by the exact criterion: the
+    linearized kernel's leading eigenvalue (numpy, host-side).
+    """
+    omega = validate_grid(omega)
     omega_c = cutoff_factor * float(omega[-1])
     t_floor = max(omega_c / (2.0 * np.pi * n_max) * MEV_TO_K, 1e-3)
+
+    def rho(t):
+        return max_eigenvalue_aniso(omega, a2f_pairs, weights, t * K_TO_MEV,
+                                    mu_star, omega_c, n_max)
 
     def is_sc(t):
         _, _, g = solve_gap_at_T(omega, a2f_pairs, weights, t, mu_star=mu_star,
                                  cutoff_factor=cutoff_factor, n_max=n_max, **solve_kw)
-        return g > gap_threshold_mev
+        if g > gap_threshold_mev:
+            return True  # self-sustained gap (near Tc: documented small high bias)
+        # A sub-threshold gap after a FIXED iteration budget is ambiguous: a
+        # marginally unstable mode may simply not have grown out of the seed
+        # yet (small delta0_mev / n_iter), which would otherwise collapse the
+        # bracket onto the floor. Same resolution as the numpy path: decide
+        # ambiguous iterates by the linearized kernel's stability, so both
+        # bracket endpoints use one consistent predicate.
+        return rho(t) > 1.0
 
-    if not is_sc(t_floor):
-        return 0.0
-    lo, hi = t_floor, 2.0 * t_floor
+    if rho(t_floor) < 1.0:
+        return 0.0  # normal / below the resolvable floor (censored)
+    if t_floor >= t_max_kelvin:
+        raise RuntimeError(f"rho > 1 already at the resolvable floor {t_floor} K >= t_max_kelvin={t_max_kelvin} K")
+    # Endpoints are clamped to t_max_kelvin so bisection cannot exceed it.
+    lo, hi = t_floor, min(2.0 * t_floor, t_max_kelvin)
     while is_sc(hi):
-        lo, hi = hi, 2.0 * hi
-        if hi > t_max_kelvin:
-            raise RuntimeError(f"gap still open at {t_max_kelvin} K")
+        if hi >= t_max_kelvin:
+            raise RuntimeError(f"gap still open at t_max_kelvin={t_max_kelvin} K; check input")
+        lo, hi = hi, min(2.0 * hi, t_max_kelvin)
     while (hi - lo) / hi > rtol:
         mid = 0.5 * (lo + hi)
         if is_sc(mid):

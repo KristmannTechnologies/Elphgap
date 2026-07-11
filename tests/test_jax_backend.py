@@ -23,6 +23,18 @@ def _einstein_material(idx: int, lam: float, w_e: float):
                     omega=omega, a2f=a2f, lambda_ref=lam, wlog_ref=w_e, wsq_ref=w_e)
 
 
+def test_trapezoid_weights_integer_grid():
+    """Regression: an integer omega grid must not truncate the half-interval
+    endpoint weights (np.zeros_like used to inherit the int dtype)."""
+    from elphgap.eliashberg_jax import _trapezoid_weights
+
+    w_int = _trapezoid_weights(np.arange(1, 8))
+    w_float = _trapezoid_weights(np.arange(1, 8, dtype=np.float64))
+    assert w_int.dtype == np.float64
+    assert np.allclose(w_int, w_float)
+    assert w_int[0] == pytest.approx(0.5)  # the value integer truncation killed
+
+
 def test_tc_batched_matches_reference_on_synthetic_spectra():
     """Self-contained parity for the batched isotropic path (no external DB)."""
     from elphgap import tc_eliashberg
