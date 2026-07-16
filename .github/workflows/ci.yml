@@ -1,0 +1,28 @@
+name: CI
+
+# Runs the pytest suite on the single combination verified locally for the
+# v0.1.1 preparation: macOS + CPython 3.12. Other OS / Python combinations are
+# deliberately NOT included — they were not tested locally, and this project
+# ships only tested matrices. Add rows here after you have actually run them.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: pytest (macOS, Python 3.12)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install (reference solvers + CPU JAX + test deps)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[cpu-jax,test]"
+      - name: Run tests
+        run: pytest -q

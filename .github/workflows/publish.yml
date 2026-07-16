@@ -1,0 +1,55 @@
+# =============================================================================
+# NOT ACTIVE — publishing happens only after a separate, explicit release gate.
+#
+# This is a PREPARED PyPI Trusted Publishing workflow (OIDC, no API token) for
+# elphgap. It is wired to `workflow_dispatch` ONLY: it never runs on push, tag,
+# or release, so merging this file publishes nothing. Turning it into a real
+# release requires deliberate, separate steps:
+#   1. Register a Trusted Publisher for the `elphgap` project on PyPI, pointing
+#      at this repository, this workflow file, and the `pypi` environment.
+#   2. Create the `pypi` GitHub environment (add reviewers/approvals as desired).
+#   3. Manually dispatch this workflow.
+# Until then it is inert documentation of the intended release path.
+# =============================================================================
+name: Publish (disabled — manual dispatch only)
+
+on:
+  workflow_dispatch: {}   # manual only; no push/tag/release triggers, on purpose
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build wheel + sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build distributions
+        run: |
+          python -m pip install --upgrade build
+          python -m build            # dist/*.whl + dist/*.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: Publish to PyPI (Trusted Publishing)
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi              # must be created (with approvals) before use
+    permissions:
+      id-token: write              # OIDC token for trusted publishing (no secret)
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Publish package distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          attestations: true       # PEP 740 provenance attestations
