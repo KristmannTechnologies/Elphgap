@@ -3,6 +3,7 @@
 # Written in the real EPW prefix.a2f layout (single-smearing case):
 #   column 1 = omega [meV], column 2 = a2F(omega), column 3 = cumulative lambda(omega).
 # Column 3 is lambda, NOT a2F -- see docs/quickstart.md.
+ w[meV] a2f and integrated 2*a2f/w for    1 smearing values
    0.0000000   0.0000000   0.0000000
    0.0500000   0.0000338   0.0000338
    0.1000000   0.0000421   0.0000886
