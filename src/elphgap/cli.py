@@ -82,14 +82,16 @@ def _resolve_n_max(args: argparse.Namespace) -> int:
 
 
 def _validate_tc_params(args: argparse.Namespace) -> None:
-    if not (0.0 <= args.mu_star < 1.0):
-        raise ParamError("bad_mu_star", f"--mu-star must be in [0, 1); got {args.mu_star}")
-    if args.cutoff_factor <= 0.0:
-        raise ParamError("bad_cutoff", f"--cutoff-factor must be > 0; got {args.cutoff_factor}")
+    if not np.isfinite(args.mu_star) or not (0.0 <= args.mu_star < 1.0):
+        raise ParamError("bad_mu_star", f"--mu-star must be a finite value in [0, 1); got {args.mu_star}")
+    if not np.isfinite(args.cutoff_factor) or args.cutoff_factor <= 0.0:
+        raise ParamError("bad_cutoff", f"--cutoff-factor must be a finite value > 0; got {args.cutoff_factor}")
 
 
 def _lambda(omega: np.ndarray, a2f: np.ndarray) -> float:
-    return float(moments(omega, a2f)[0])
+    # Direct lambda moment; tolerates the raw (possibly negative) non-selected
+    # columns without the sqrt(<omega^2>) NaN that full moments() would hit.
+    return 2.0 * float(np.trapezoid(a2f / omega, omega))
 
 
 def _smearing_rows(spec: A2FSpectrum) -> list[dict]:
@@ -103,6 +105,7 @@ def _smearing_rows(spec: A2FSpectrum) -> list[dict]:
                 "smearing_meV": smear,
                 "lambda_from_a2f": _lambda(spec.omega, spec.a2f_by_column[c]),
                 "lambda_from_file": spec.lambda_from_file.get(c),
+                "n_negative": spec.negatives_by_column.get(c, 0),
                 "selected": c == spec.column,
             }
         )
@@ -111,6 +114,8 @@ def _smearing_rows(spec: A2FSpectrum) -> list[dict]:
 
 def _build_manifest(command: str, path: str, spec: A2FSpectrum, tc: dict | None = None) -> dict:
     lam, wlog, w2 = moments(spec.omega, spec.a2f)
+    if not all(np.isfinite(v) for v in (lam, wlog, w2)):
+        raise A2FParseError("non_finite_moments", "computed spectral moments are not finite; check the input a2F.")
     manifest = {
         "schema_version": SCHEMA_VERSION,
         "elphgap_version": __version__,
@@ -165,19 +170,39 @@ def _print_warnings(warnings: list[dict]) -> None:
 def _print_smearings(spec: A2FSpectrum, rows: list[dict]) -> None:
     if spec.fmt == "epw":
         print(f"  a2F smearing columns ({spec.n_smearings})")
-        print("    col   smearing[meV]   lambda(a2F)   lambda(file)")
+        print("    col   smearing[meV]   lambda(a2F)   lambda(file)   neg")
         for r in rows:
             smear = f"{r['smearing_meV']:.4g}" if r["smearing_meV"] is not None else "  ?"
             lfile = f"{r['lambda_from_file']:.4f}" if r["lambda_from_file"] is not None else "   ?"
+            neg = str(r["n_negative"]) if r["n_negative"] else "-"
             sel = "  <- selected" if r["selected"] else ""
-            print(f"    {r['column']:<5} {smear:>10}   {r['lambda_from_a2f']:>10.4f}   {lfile:>10}{sel}")
+            print(f"    {r['column']:<5} {smear:>10}   {r['lambda_from_a2f']:>10.4f}   {lfile:>10}   {neg:>3}{sel}")
     else:  # qe
         r = rows[0]
         lf = f"{spec.lambda_footer:.4f}" if spec.lambda_footer is not None else "n/a"
-        print(f"  a2F column   {r['column']} (total)   lambda(a2F)={r['lambda_from_a2f']:.4f}   lambda(footer)={lf}")
+        neg = f"   negatives: {r['n_negative']}" if r["n_negative"] else ""
+        print(f"  a2F column   {r['column']} (total)   lambda(a2F)={r['lambda_from_a2f']:.4f}   lambda(footer)={lf}{neg}")
         n_modes = spec.n_columns - 2
         if n_modes > 0:
             print(f"  per-mode columns: {n_modes} (partial a2F in columns 3..{spec.n_columns}; select with --column)")
+
+
+def _print_common(args: argparse.Namespace, spec: A2FSpectrum, manifest: dict) -> None:
+    """Shared human block — the same fields the JSON manifest carries."""
+    fm, sp, cl = manifest["format"], manifest["spectrum"], manifest["cleaning"]
+    tag = "forced" if spec.detection == "forced" else f"auto-detected via {spec.detection}"
+    print(f"  input        {args.file}")
+    print(f"  sha256       {spec.sha256}  ({spec.n_bytes} bytes)")
+    print(f"  format       {spec.fmt} [{tag}]   input omega: {spec.units_in} -> meV   columns {spec.n_columns}   smearings {spec.n_smearings}")
+    sm = f"  (smearing {fm['smearing_meV']:g} meV)" if fm["smearing_meV"] is not None else ""
+    print(f"  a2F column   {spec.column}{sm}")
+    clean = f"  cleaning     clip <= {cl['clip_below_meV']:g} meV   dropped {cl['dropped_below_clip']}   clamped {cl['clamped_negative']}"
+    if cl["clamped_negative"]:
+        clean += f"   most_negative {cl['most_negative_a2f']:.3e}"
+    print(clean)
+    print(f"  points       {sp['n_points']} of {sp['n_points_raw']} raw       omega {sp['omega_min_meV']:.4g} … {sp['omega_max_meV']:.4g} meV")
+    print(f"  lambda       {sp['lambda']:.4f}       omega_log {sp['omega_log_meV']:.4g} meV ({sp['omega_log_K']:.4g} K)       omega_2 {sp['omega_2_meV']:.4g} meV")
+    _print_smearings(spec, manifest["smearings"])
 
 
 def _run_inspect(args: argparse.Namespace) -> int:
@@ -187,21 +212,8 @@ def _run_inspect(args: argparse.Namespace) -> int:
     if args.json:
         print(json.dumps(manifest, indent=2, allow_nan=False))
         return EXIT_OK
-
-    fm, sp, cl = manifest["format"], manifest["spectrum"], manifest["cleaning"]
-    tag = "forced" if spec.detection == "forced" else f"auto-detected via {spec.detection}"
     print(f"elphgap {__version__} · inspect   (schema {SCHEMA_VERSION})")
-    print(f"  input        {args.file}")
-    print(f"  sha256       {spec.sha256}  ({spec.n_bytes} bytes)")
-    print(f"  format       {spec.fmt} [{tag}]   units {spec.units_in} -> meV   columns {spec.n_columns}")
-    print(f"  a2F column   {spec.column}" + (f"  (smearing {fm['smearing_meV']:g} meV)" if fm["smearing_meV"] is not None else ""))
-    pts = f"  points       {sp['n_points']} of {sp['n_points_raw']} raw"
-    if cl["dropped_below_clip"]:
-        pts += f"  ({cl['dropped_below_clip']} dropped, clip <= {cl['clip_below_meV']:g} meV)"
-    print(pts)
-    print(f"  omega        {sp['omega_min_meV']:.4g} … {sp['omega_max_meV']:.4g} meV")
-    print(f"  lambda       {sp['lambda']:.4f}       omega_log {sp['omega_log_meV']:.4g} meV ({sp['omega_log_K']:.4g} K)       omega_2 {sp['omega_2_meV']:.4g} meV")
-    _print_smearings(spec, manifest["smearings"])
+    _print_common(args, spec, manifest)
     _print_warnings(manifest["warnings"])
     return EXIT_OK
 
@@ -209,20 +221,11 @@ def _run_inspect(args: argparse.Namespace) -> int:
 def _run_tc(args: argparse.Namespace) -> int:
     _validate_tc_params(args)
     n_max = _resolve_n_max(args)
+    # require_column=True: read_a2f raises column_required (exit 4) for a smearing
+    # sweep BEFORE selecting/validating any default column or its data.
     spec = read_a2f(args.file, fmt=args.format, column=args.column,
-                    clip_below_mev=args.clip_below, clamp_negative=args.clamp_negative)
-
-    # A smearing sweep has no canonical column -> demand an explicit choice.
-    if spec.requires_column_choice and args.column is None:
-        cols = ", ".join(
-            f"col {r['column']}" + (f" ({r['smearing_meV']:g} meV, lambda {r['lambda_from_a2f']:.3f})" if r["smearing_meV"] is not None else f" (lambda {r['lambda_from_a2f']:.3f})")
-            for r in _smearing_rows(spec)
-        )
-        raise ParamError(
-            "column_required",
-            f"this EPW file has {spec.n_smearings} a2F smearing columns; choose one with "
-            f"--column N (no canonical default). Options: {cols}.",
-        )
+                    clip_below_mev=args.clip_below, clamp_negative=args.clamp_negative,
+                    require_column=True)
 
     omega_c = args.cutoff_factor * float(spec.omega[-1])
     t_floor_k = max(omega_c / (2.0 * np.pi * n_max) * MEV_TO_K, 1e-3)
@@ -251,13 +254,9 @@ def _run_tc(args: argparse.Namespace) -> int:
         print(json.dumps(manifest, indent=2, allow_nan=False))
         return EXIT_CENSORED if res.censored else EXIT_OK
 
-    sp, cv = manifest["spectrum"], manifest["conventions"]
-    tag = "forced" if spec.detection == "forced" else f"auto-detected via {spec.detection}"
+    cv = manifest["conventions"]
     print(f"elphgap {__version__} · Tc (isotropic Migdal-Eliashberg)   (schema {SCHEMA_VERSION})")
-    print(f"  input        {args.file}")
-    print(f"  sha256       {spec.sha256}  ({spec.n_bytes} bytes)")
-    print(f"  format       {spec.fmt} [{tag}]   a2F column {spec.column}   input omega: meV")
-    print(f"  lambda       {sp['lambda']:.4f}       omega_log {sp['omega_log_meV']:.4g} meV")
+    _print_common(args, spec, manifest)
     if res.censored:
         rho = f"{res.rho_at_floor:.4g}" if res.rho_at_floor is not None else "n/a"
         print(f"  Tc           censored — below the resolvable floor (rho(T_floor) = {rho} < 1)")
