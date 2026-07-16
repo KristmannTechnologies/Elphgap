@@ -239,3 +239,86 @@ def test_shipped_pb_example():
     lam, wlog, _ = moments(spec.omega, spec.a2f)
     assert 1.0 < lam < 1.3 and 3.0 < wlog < 8.0
     assert not any(w.code == "lambda_crosscheck" for w in spec.warnings)
+
+
+# --- re-gate blockers ------------------------------------------------------ #
+
+def test_block_grammar_rejects_interleaved_nonnumeric(tmp_path):
+    # A non-numeric line between valid data rows must NOT be silently skipped.
+    p = tmp_path / "b.a2f"
+    p.write_text(" Fermi window (eV) 0.3\n1.0 0.10 0.10\nBROKEN 0.2 0.3\n3.0 0.30 0.60\n")
+    with pytest.raises(A2FParseError) as e:
+        read_a2f(str(p), fmt="epw")
+    assert e.value.code == "malformed_row" and e.value.exit_code == 2
+
+
+def test_footer_smearing_count_hard_mismatch(tmp_path):
+    # 5 data columns imply N=2, but the footer lists only 1 smearing -> exit 2.
+    w, a2f = _pb_like(60)
+    path = _write_epw(tmp_path, "m.a2f", w, [a2f, 0.9 * a2f], [0.5])  # 2 a2F cols, 1 smearing
+    with pytest.raises(A2FParseError) as e:
+        read_a2f(path, fmt="epw")
+    assert e.value.code == "epw_smearing_count_mismatch" and e.value.exit_code == 2
+
+
+def test_lambda_file_zero_with_positive_a2f_warns(tmp_path):
+    p = tmp_path / "z.a2f"  # a2F positive, cumulative-lambda column all zero
+    p.write_text(" Fermi window (eV) 0.3\n1.0 0.10 0.0\n5.0 0.40 0.0\n10.0 0.10 0.0\n")
+    spec = read_a2f(str(p), fmt="epw")
+    assert any(w.code == "lambda_crosscheck" for w in spec.warnings)
+
+
+def test_non_monotonic_lambda_column_warns(tmp_path):
+    p = tmp_path / "nm.a2f"  # lambda column decreases -> not a valid cumulative
+    p.write_text(" Fermi window (eV) 0.3\n1.0 0.10 0.90\n5.0 0.40 0.50\n10.0 0.10 0.10\n")
+    spec = read_a2f(str(p), fmt="epw")
+    assert any(w.code == "epw_lambda_not_monotonic" for w in spec.warnings)
+
+
+def test_qe_single_column_is_clean_error(tmp_path):
+    p = tmp_path / "one.dos"
+    p.write_text("#  frequencies in Rydberg\n0.001\n0.002\n0.003\n")
+    with pytest.raises(A2FParseError) as e:
+        read_a2f(str(p))
+    assert e.value.code == "too_few_columns" and e.value.exit_code == 2
+
+
+def test_non_finite_footer_smearing_rejected(tmp_path):
+    p = tmp_path / "nf.a2f"
+    p.write_text("1.0 0.1 0.1\n2.0 0.4 0.5\n3.0 0.1 0.6\n Phonon smearing (meV)\n  #  nan\n")
+    with pytest.raises(A2FParseError) as e:
+        read_a2f(str(p), fmt="epw")
+    assert e.value.code == "non_finite_footer" and e.value.exit_code == 2
+
+
+def test_clip_not_finite_is_param_error(tmp_path):
+    w, a2f = _pb_like(60)
+    path = _write_epw(tmp_path, "pb.a2f", w, [a2f], [0.5])
+    with pytest.raises(A2FColumnError) as e:
+        read_a2f(path, clip_below_mev=float("nan"))
+    assert e.value.code == "clip_not_finite" and e.value.exit_code == 4
+
+
+def test_require_column_before_column_specific_errors(tmp_path):
+    # Multi-smearing with a NEGATIVE default column 2: require_column must fire
+    # (exit 4) before the negative-column data error (exit 2).
+    p = tmp_path / "s.a2f"
+    p.write_text(
+        " Phonon smearing (meV)\n  #  0.1  0.2\n"
+        "1.0 -0.05 0.09 0.05 0.04\n5.0 0.40 0.38 0.30 0.28\n10.0 0.10 0.09 0.55 0.52\n"
+    )
+    with pytest.raises(A2FColumnError) as e:
+        read_a2f(str(p), fmt="epw", require_column=True)
+    assert e.value.code == "column_required" and e.value.exit_code == 4
+
+
+def test_non_selected_negatives_reported_not_clamped(tmp_path):
+    p = tmp_path / "n.a2f"  # column 3 (not selected) has a negative
+    p.write_text(
+        " Phonon smearing (meV)\n  #  0.1  0.2\n"
+        "1.0 0.10 -0.05 0.05 0.04\n5.0 0.40 0.38 0.30 0.28\n10.0 0.10 0.09 0.55 0.52\n"
+    )
+    spec = read_a2f(str(p), fmt="epw", column=2)
+    assert spec.negatives_by_column[3] == 1  # counted, not hidden
+    assert (spec.a2f_by_column[3] < 0).any()  # left unclamped
+    assert any(w.code == "negative_a2f_other" for w in spec.warnings)

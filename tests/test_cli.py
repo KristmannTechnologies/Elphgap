@@ -182,3 +182,54 @@ def test_json_has_no_nan(pb):
 def test_usage_errors_exit4(pb):
     assert run("inspect", pb, "--bogus").returncode == 4
     assert run().returncode == 4
+
+
+# --- re-gate blockers ------------------------------------------------------ #
+
+def test_nonfinite_params_exit4(pb):
+    assert run("tc", pb, "--mu-star", "nan").returncode == 4
+    assert run("tc", pb, "--cutoff-factor", "inf").returncode == 4
+    assert run("tc", pb, "--cutoff-factor", "nan").returncode == 4
+    assert run("inspect", pb, "--clip-below", "nan").returncode == 4
+
+
+def test_multismearing_negative_col2_column_required_first(tmp_path):
+    # tc on a sweep whose default column 2 is negative: exit 4 (column_required),
+    # NOT exit 2 (negative) — the missing choice is checked first.
+    p = tmp_path / "s.a2f"
+    p.write_text(
+        " Phonon smearing (meV)\n  #  0.1  0.2\n"
+        "1.0 -0.05 0.09 0.05 0.04\n5.0 0.40 0.38 0.30 0.28\n10.0 0.10 0.09 0.55 0.52\n"
+    )
+    r = run("tc", str(p), "--format", "epw")
+    assert r.returncode == 4 and "column_required" in r.stderr
+
+
+def test_broken_midblock_exit2(tmp_path):
+    p = tmp_path / "b.a2f"
+    p.write_text(" Fermi window (eV) 0.3\n1.0 0.1 0.1\nBROKEN 0.2 0.3\n3.0 0.3 0.6\n")
+    r = run("inspect", str(p), "--format", "epw")
+    assert r.returncode == 2 and "malformed_row" in r.stderr
+
+
+def _qe_file(tmp_path):
+    p = tmp_path / "a2F.dos"
+    p.write_text(
+        "#  frequencies in Rydberg\n0.001 0.05 0.05\n0.002 0.30 0.30\n"
+        "0.003 0.60 0.60\n0.004 0.20 0.20\n lambda = 0.9\n"
+    )
+    return str(p)
+
+
+def test_qe_human_reports_ry_conversion(tmp_path):
+    r = run("tc", _qe_file(tmp_path))
+    assert r.returncode in (0, 3)
+    assert "input omega: Ry -> meV" in r.stdout  # not "meV"
+
+
+def test_human_manifest_is_complete(pb):
+    # Human tc must carry the same manifest fields as JSON: cleaning + smearing.
+    r = run("tc", pb, "--mu-star", "0.10")
+    assert r.returncode == 0
+    for token in ("cleaning", "clip <=", "clamped", "smearing", "a2F smearing columns", "conventions"):
+        assert token in r.stdout, token
