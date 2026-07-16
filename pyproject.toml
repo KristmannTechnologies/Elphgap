@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "elphgap"
-version = "0.1.0"
+dynamic = ["version"]
 description = "GPU-accelerated anisotropic Migdal-Eliashberg gap solver for phonon-mediated superconductors"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -30,11 +30,31 @@ dependencies = ["numpy>=2.0", "scipy>=1.13"]
 cpu-jax = ["jax[cpu]>=0.4.30"]
 test = ["pytest>=8"]
 
+[project.scripts]
+elphgap = "elphgap.cli:main"
+
 [project.urls]
 Repository = "https://github.com/KristmannTechnologies/Elphgap"
 
+[tool.hatch.version]
+path = "src/elphgap/__init__.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/elphgap"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "src/elphgap",
+  "tests",
+  "docs",
+  "examples",
+  "benchmarks",
+  "README.md",
+  "CHANGELOG.md",
+  "LICENSE",
+  "AUTHORS.md",
+  "CITATION.cff",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
