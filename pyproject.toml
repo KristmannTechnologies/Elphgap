@@ -8,7 +8,8 @@ dynamic = ["version"]
 description = "GPU-accelerated anisotropic Migdal-Eliashberg gap solver for phonon-mediated superconductors"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { file = "LICENSE" }
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
 authors = [{ name = "Alexander Oberländer" }, { name = "Claudius Kristmann" }]
 keywords = [
   "superconductivity", "eliashberg", "electron-phonon", "migdal-eliashberg",
@@ -17,7 +18,6 @@ keywords = [
 classifiers = [
   "Development Status :: 4 - Beta",
   "Intended Audience :: Science/Research",
-  "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
@@ -35,6 +35,9 @@ elphgap = "elphgap.cli:main"
 
 [project.urls]
 Repository = "https://github.com/KristmannTechnologies/Elphgap"
+Documentation = "https://github.com/KristmannTechnologies/Elphgap/tree/main/docs"
+Issues = "https://github.com/KristmannTechnologies/Elphgap/issues"
+Changelog = "https://github.com/KristmannTechnologies/Elphgap/blob/main/CHANGELOG.md"
 
 [tool.hatch.version]
 path = "src/elphgap/__init__.py"
