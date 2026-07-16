@@ -32,15 +32,22 @@ def _cum_lambda(omega, a2f):
     return np.concatenate(([0.0], np.cumsum(0.5 * (integ[1:] + integ[:-1]) * np.diff(omega))))
 
 
-def _write_epw(path, omega, a2f_cols, smearings):
-    lam = [_cum_lambda(omega, a) for a in a2f_cols]
+def _write_epw(path, omega, a2f_cols, smearings, lam=None):
+    """Full real-layout EPW prefix.a2f: header, data, five footer records in order."""
+    if lam is None:
+        lam = [_cum_lambda(omega, a) for a in a2f_cols]
     cols = [omega, *a2f_cols, *lam]
-    lines = ["".join(f"{c[i]:14.7f}" for c in cols) for i in range(omega.size)]
-    footer = (
-        " Phonon smearing (meV)\n  #  " + "  ".join(f"{s:.6f}" for s in smearings) + "\n"
-        " Fermi window (eV) 0.3\n"
-    )
-    Path(path).write_text("\n".join(lines) + "\n" + footer)
+    n = len(a2f_cols)
+    parts = [f" w[meV] a2f and integrated 2*a2f/w for {n:4d} smearing values"]
+    parts += ["".join(f"{c[i]:14.7f}" for c in cols) for i in range(omega.size)]
+    parts += [
+        " Integrated el-ph coupling", "  #  " + "  ".join(f"{c[-1]:.6f}" for c in lam),
+        " Phonon smearing (meV)", "  #  " + "  ".join(f"{s:.6f}" for s in smearings),
+        " Electron smearing (eV)   0.0500000",
+        " Fermi window (eV)   0.3000000",
+        f" Summed el-ph coupling   {lam[0][-1]:.6f}",
+    ]
+    Path(path).write_text("\n".join(parts) + "\n")
     return str(path)
 
 
@@ -162,10 +169,10 @@ def test_bad_params_exit4(pb):
 
 
 def test_negative_default_exit2_clamp_ok(tmp_path):
-    p = tmp_path / "neg.a2f"
-    p.write_text("1.0 0.1 0.2\n2.0 -0.05 0.3\n3.0 0.3 0.6\n")
-    assert run("inspect", str(p), "--format", "epw").returncode == 2
-    assert run("inspect", str(p), "--format", "epw", "--clamp-negative").returncode == 0
+    w = np.array([1.0, 2.0, 3.0])
+    p = _write_epw(tmp_path / "neg.a2f", w, [np.array([0.1, -0.05, 0.3])], [0.5])
+    assert run("inspect", p, "--format", "epw").returncode == 2
+    assert run("inspect", p, "--format", "epw", "--clamp-negative").returncode == 0
 
 
 def test_missing_file_exit2(tmp_path):
@@ -196,12 +203,9 @@ def test_nonfinite_params_exit4(pb):
 def test_multismearing_negative_col2_column_required_first(tmp_path):
     # tc on a sweep whose default column 2 is negative: exit 4 (column_required),
     # NOT exit 2 (negative) — the missing choice is checked first.
-    p = tmp_path / "s.a2f"
-    p.write_text(
-        "1.0 -0.05 0.09 0.05 0.04\n5.0 0.40 0.38 0.30 0.28\n10.0 0.10 0.09 0.55 0.52\n"
-        " Phonon smearing (meV)\n  #  0.1  0.2\n"
-    )
-    r = run("tc", str(p), "--format", "epw")
+    w = np.array([1.0, 5.0, 10.0])
+    p = _write_epw(tmp_path / "s.a2f", w, [np.array([-0.05, 0.40, 0.10]), np.array([0.09, 0.38, 0.09])], [0.1, 0.2])
+    r = run("tc", p, "--format", "epw")
     assert r.returncode == 4 and "column_required" in r.stderr
 
 
@@ -235,7 +239,7 @@ def _qe_file(tmp_path):
     p = tmp_path / "a2F.dos"
     p.write_text(
         "#  frequencies in Rydberg\n0.001 0.05 0.05\n0.002 0.30 0.30\n"
-        "0.003 0.60 0.60\n0.004 0.20 0.20\n lambda = 0.9\n"
+        "0.003 0.60 0.60\n0.004 0.20 0.20\n lambda = 0.9   Delta = 0.001\n"
     )
     return str(p)
 
