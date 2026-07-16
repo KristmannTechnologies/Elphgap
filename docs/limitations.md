@@ -32,12 +32,16 @@ anisotropic input into an isotropic one.
   Default: `--mu-star 0.10`.
 - **Matsubara cutoff** ω_c = `cutoff-factor` · ω_max, with ω_max the largest
   frequency in your (cleaned) grid. Default `--cutoff-factor 10`. The matrix
-  size N = ⌈ω_c / (2πT)⌉ is capped at `--n-max` (default 512). The infinite
-  Matsubara sum in the mass-renormalization Z_n is kept in closed form; only
-  the kernel matrix is truncated.
-- **Smearing column.** EPW `prefix.a2f` files carry α²F at several phonon
-  smearing values. The CLI defaults to column 2 (first smearing) and warns;
-  choosing the converged column is your physics call (`--column N`).
+  size N = ⌈ω_c / (2πT)⌉ is capped at `--n-max` (default 4096; `--fast` uses 512
+  for a quicker, coarser run with a higher Tc floor). The infinite Matsubara sum
+  in the mass-renormalization Z_n is kept in closed form; only the kernel matrix
+  is truncated.
+- **Smearing column.** An EPW `prefix.a2f` carries α²F at `N` phonon smearing
+  values (columns 2…N+1; the following N columns are cumulative λ, which the CLI
+  refuses to treat as α²F). For a single smearing the CLI uses column 2; for a
+  sweep (N>1) `tc` **requires** an explicit `--column N` — no smearing has
+  universal physical priority, so choosing the converged one is your call.
+  `inspect` shows every smearing and its λ.
 
 ## Censoring semantics (`tc`, exit code 3)
 

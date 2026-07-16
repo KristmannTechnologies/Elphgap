@@ -93,22 +93,26 @@ canonical MgB₂ two-band model (Golubov 2002 coupling matrix) end-to-end.
 
 `pip install -e .` (or a built wheel — `python -m build` then
 `pip install dist/elphgap-*.whl`) puts an `elphgap` console script on your PATH.
-It reads an isotropic α²F spectrum from a Quantum ESPRESSO `a2F.dos`
-(frequencies in Ry) or EPW `prefix.a2f` (meV, per-smearing columns) file:
+It reads an isotropic α²F spectrum from a Quantum ESPRESSO **matdyn.x** `a2F.dos`
+(ω in Ry; column 2 = total α²F) or an EPW `prefix.a2f` (ω in meV; `1+2N` columns
+= ω, N α²F, N cumulative-λ) file. A synthetic example ships as package data:
 
 ```bash
-elphgap inspect examples/pb_like.a2f          # format, units, λ, ω_log, input SHA256
-elphgap tc examples/pb_like.a2f --mu-star 0.10 # isotropic Migdal-Eliashberg Tc + conventions
-elphgap tc examples/pb_like.a2f --json         # machine-readable
+EX=$(python -c "import elphgap; print(elphgap.example_a2f_path())")
+elphgap inspect "$EX"                 # format, units, every smearing + its λ, SHA256
+elphgap tc "$EX" --mu-star 0.10       # isotropic Migdal-Eliashberg Tc + full manifest
+elphgap tc "$EX" --json               # same fields, machine-readable (schema 1)
 ```
 
 Isotropic only — for an anisotropic Tc use the Python API
-(`tc_aniso_linearized`). The CLI never clips silently (ω≤0 rows and negative
-α²F are dropped/clamped *and reported*), makes the EPW smearing-column choice
-explicit (`--column N`), and uses exit codes 0/2/3/4 (ok / parse error /
-Tc censored / bad parameters). Full walkthrough and the synthetic Pb-like
-example: [`docs/quickstart.md`](docs/quickstart.md); scope, troubleshooting, and
-a GPL-3.0 usage FAQ are under [`docs/`](docs/).
+(`tc_aniso_linearized`). The CLI is fail-closed: it detects the format only from
+header/footer signatures (else `--format` is required), rejects NaN/Inf and
+negative α²F by default (`--clamp-negative` opts in), refuses to feed a
+cumulative-λ column to the solver, and requires an explicit `--column` for a
+multi-smearing EPW sweep. Exit codes: 0 ok · 2 broken input · 3 Tc censored · 4
+invalid user choice · 5 solver error. Full walkthrough:
+[`docs/quickstart.md`](docs/quickstart.md); scope, troubleshooting, and a GPL-3.0
+usage FAQ are under [`docs/`](docs/).
 
 ## μ* convention (read this before feeding literature λᵢⱼ)
 
@@ -207,15 +211,20 @@ database solves in ~440 s (~1.8 materials/s); float64 at n_max=1024 is
 
 ## License
 
-GNU General Public License v3.0 or later (GPL-3.0-or-later; see LICENSE) —
-the same copyleft license used by Quantum ESPRESSO and EPW. No warranty, no
-liability; see the license text for the full disclaimer. If you use results from this code in a
-publication, you are responsible for validating them against the included
-benchmarks and for your own convergence studies.
+GNU General Public License v3.0 or later (GPL-3.0-or-later; see LICENSE) — the
+same copyleft *family* as Quantum ESPRESSO and EPW, which are distributed under
+GPLv2 (a different version of the same family). No warranty, no liability; see
+the license text for the full disclaimer. Plain-language usage/commercial FAQ:
+[`docs/license-and-commercial-use.md`](docs/license-and-commercial-use.md). If
+you use results from this code in a publication, you are responsible for
+validating them against the included benchmarks and for your own convergence
+studies.
 
 ## Cite
 
-See `CITATION.cff` (Zenodo DOI on release). Please also cite the methods
+See `CITATION.cff`. The Zenodo DOI badge above is the **v0.1.0** version DOI; a
+new version DOI is minted at each release (the concept DOI resolves to all
+versions). Please also cite the methods
 this builds on: Allen & Dynes (1975), Margine & Giustino PRB 87, 024505
 (2013) for the anisotropic ME formulation, and EPW/IsoME if you use them to
 generate inputs or cross-checks. If you run the BETE-NET database
