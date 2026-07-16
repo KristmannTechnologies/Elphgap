@@ -108,7 +108,7 @@ def test_epw_multi_smearing_requires_choice(tmp_path):
 def test_epw_column_count_must_be_odd(tmp_path):
     # A 2-column (even) file is not the official omega,N a2F,N lambda layout.
     p = tmp_path / "bad.a2f"
-    p.write_text(" Fermi window (eV) 0.3\n1.0 0.1\n2.0 0.4\n3.0 0.1\n")
+    p.write_text("1.0 0.1\n2.0 0.4\n3.0 0.1\n")
     with pytest.raises(A2FParseError) as e:
         read_a2f(str(p), fmt="epw")
     assert e.value.code == "epw_column_count" and e.value.exit_code == 2
@@ -161,7 +161,7 @@ def test_unknown_format_is_param_error(tmp_path):
 
 def test_nan_inf_rejected(tmp_path):
     p = tmp_path / "nan.a2f"
-    p.write_text(" Fermi window (eV) 0.3\n1.0 0.1 0.1\n2.0 nan 0.2\n3.0 0.3 0.5\n")
+    p.write_text("1.0 0.1 0.1\n2.0 nan 0.2\n3.0 0.3 0.5\n")
     with pytest.raises(A2FParseError) as e:
         read_a2f(str(p), fmt="epw")
     assert e.value.code == "non_finite" and e.value.exit_code == 2
@@ -169,7 +169,7 @@ def test_nan_inf_rejected(tmp_path):
 
 def test_negative_a2f_rejected_by_default_clamp_opt_in(tmp_path):
     p = tmp_path / "neg.a2f"
-    p.write_text(" Fermi window (eV) 0.3\n1.0 0.10 0.2\n2.0 -0.05 0.3\n3.0 0.30 0.6\n")
+    p.write_text("1.0 0.10 0.2\n2.0 -0.05 0.3\n3.0 0.30 0.6\n")
     with pytest.raises(A2FParseError) as e:
         read_a2f(str(p), fmt="epw")
     assert e.value.code == "negative_a2f" and e.value.exit_code == 2
@@ -189,7 +189,7 @@ def test_clip_below_negative_is_param_error(tmp_path):
 
 def test_clip_below_drops_and_warns(tmp_path):
     p = tmp_path / "c.a2f"
-    p.write_text(" Fermi window (eV) 0.3\n0.5 0.1 0.1\n1.5 0.2 0.3\n5.0 0.4 0.7\n10.0 0.1 0.8\n")
+    p.write_text("0.5 0.1 0.1\n1.5 0.2 0.3\n5.0 0.4 0.7\n10.0 0.1 0.8\n")
     spec = read_a2f(str(p), fmt="epw", clip_below_mev=2.0)
     assert spec.omega.min() == pytest.approx(5.0)
     assert any(w.code == "dropped_below_clip" for w in spec.warnings)
@@ -197,9 +197,9 @@ def test_clip_below_drops_and_warns(tmp_path):
 
 def test_malformed_and_ragged_and_empty(tmp_path):
     for name, text, code in [
-        ("m.a2f", " Fermi window (eV) 0.3\n1.0 0.1 0.1\n2.0 oops 0.2\n", "malformed_row"),
-        ("r.a2f", " Fermi window (eV) 0.3\n1.0 0.1 0.1\n2.0 0.2\n3.0 0.3 0.3\n", "ragged_columns"),
-        ("e.a2f", " Fermi window (eV) 0.3\n5.0 0.3 0.3\n", "no_data"),
+        ("m.a2f", "1.0 0.1 0.1\n2.0 oops 0.2\n", "malformed_row"),
+        ("r.a2f", "1.0 0.1 0.1\n2.0 0.2\n3.0 0.3 0.3\n", "ragged_columns"),
+        ("e.a2f", "5.0 0.3 0.3\n", "no_data"),
     ]:
         p = tmp_path / name
         p.write_text(text)
@@ -210,7 +210,7 @@ def test_malformed_and_ragged_and_empty(tmp_path):
 
 def test_non_increasing_after_clean(tmp_path):
     p = tmp_path / "dup.a2f"
-    p.write_text(" Fermi window (eV) 0.3\n5.0 0.1 0.1\n5.0 0.2 0.2\n6.0 0.3 0.3\n")
+    p.write_text("5.0 0.1 0.1\n5.0 0.2 0.2\n6.0 0.3 0.3\n")
     with pytest.raises(A2FParseError) as e:
         read_a2f(str(p), fmt="epw")
     assert e.value.code == "not_increasing"
@@ -246,7 +246,7 @@ def test_shipped_pb_example():
 def test_block_grammar_rejects_interleaved_nonnumeric(tmp_path):
     # A non-numeric line between valid data rows must NOT be silently skipped.
     p = tmp_path / "b.a2f"
-    p.write_text(" Fermi window (eV) 0.3\n1.0 0.10 0.10\nBROKEN 0.2 0.3\n3.0 0.30 0.60\n")
+    p.write_text("1.0 0.10 0.10\nBROKEN 0.2 0.3\n3.0 0.30 0.60\n")
     with pytest.raises(A2FParseError) as e:
         read_a2f(str(p), fmt="epw")
     assert e.value.code == "malformed_row" and e.value.exit_code == 2
@@ -263,14 +263,14 @@ def test_footer_smearing_count_hard_mismatch(tmp_path):
 
 def test_lambda_file_zero_with_positive_a2f_warns(tmp_path):
     p = tmp_path / "z.a2f"  # a2F positive, cumulative-lambda column all zero
-    p.write_text(" Fermi window (eV) 0.3\n1.0 0.10 0.0\n5.0 0.40 0.0\n10.0 0.10 0.0\n")
+    p.write_text("1.0 0.10 0.0\n5.0 0.40 0.0\n10.0 0.10 0.0\n")
     spec = read_a2f(str(p), fmt="epw")
     assert any(w.code == "lambda_crosscheck" for w in spec.warnings)
 
 
 def test_non_monotonic_lambda_column_warns(tmp_path):
     p = tmp_path / "nm.a2f"  # lambda column decreases -> not a valid cumulative
-    p.write_text(" Fermi window (eV) 0.3\n1.0 0.10 0.90\n5.0 0.40 0.50\n10.0 0.10 0.10\n")
+    p.write_text("1.0 0.10 0.90\n5.0 0.40 0.50\n10.0 0.10 0.10\n")
     spec = read_a2f(str(p), fmt="epw")
     assert any(w.code == "epw_lambda_not_monotonic" for w in spec.warnings)
 
@@ -304,8 +304,8 @@ def test_require_column_before_column_specific_errors(tmp_path):
     # (exit 4) before the negative-column data error (exit 2).
     p = tmp_path / "s.a2f"
     p.write_text(
-        " Phonon smearing (meV)\n  #  0.1  0.2\n"
         "1.0 -0.05 0.09 0.05 0.04\n5.0 0.40 0.38 0.30 0.28\n10.0 0.10 0.09 0.55 0.52\n"
+        " Phonon smearing (meV)\n  #  0.1  0.2\n"
     )
     with pytest.raises(A2FColumnError) as e:
         read_a2f(str(p), fmt="epw", require_column=True)
@@ -315,10 +315,86 @@ def test_require_column_before_column_specific_errors(tmp_path):
 def test_non_selected_negatives_reported_not_clamped(tmp_path):
     p = tmp_path / "n.a2f"  # column 3 (not selected) has a negative
     p.write_text(
-        " Phonon smearing (meV)\n  #  0.1  0.2\n"
         "1.0 0.10 -0.05 0.05 0.04\n5.0 0.40 0.38 0.30 0.28\n10.0 0.10 0.09 0.55 0.52\n"
+        " Phonon smearing (meV)\n  #  0.1  0.2\n"
     )
     spec = read_a2f(str(p), fmt="epw", column=2)
     assert spec.negatives_by_column[3] == 1  # counted, not hidden
     assert (spec.a2f_by_column[3] < 0).any()  # left unclamped
     assert any(w.code == "negative_a2f_other" for w in spec.warnings)
+
+
+# --- gate 3: edge-line grammar, EPW structure contract, footer finiteness --- #
+
+def test_broken_first_and_last_line(tmp_path):
+    for name, text in [
+        ("first", "BROKEN 0.1 0.0\n1.0 0.3 0.3\n2.0 0.1 0.4\n"),
+        ("last", "1.0 0.3 0.3\n2.0 0.1 0.4\nBROKEN 0.1 0.0\n"),
+    ]:
+        p = tmp_path / f"{name}.a2f"
+        p.write_text(text)
+        with pytest.raises(A2FParseError) as e:
+            read_a2f(str(p), fmt="epw")
+        assert e.value.code == "malformed_row" and e.value.exit_code == 2
+
+
+def test_commented_footer_then_numeric(tmp_path):
+    p = tmp_path / "c.a2f"
+    p.write_text("1.0 0.3 0.3\n2.0 0.4 0.5\n# Phonon smearing (meV)\n3.0 0.1 0.6\n")
+    with pytest.raises(A2FParseError) as e:
+        read_a2f(str(p), fmt="epw")
+    assert e.value.code == "malformed_row" and e.value.exit_code == 2
+
+
+def test_epw_header_n_must_match(tmp_path):
+    for hn in (0, 2, 999999999):
+        p = tmp_path / f"h{hn}.a2f"  # 3-column block => N=1, header claims otherwise
+        p.write_text(f" w[meV] a2f and integrated 2*a2f/w for {hn} smearing values\n1.0 0.3 0.3\n2.0 0.1 0.4\n")
+        with pytest.raises(A2FParseError) as e:
+            read_a2f(str(p), fmt="epw")
+        assert e.value.code == "epw_header_n_mismatch" and e.value.exit_code == 2
+
+
+def test_epw_header_n_match_accepted(tmp_path):
+    p = tmp_path / "ok.a2f"
+    p.write_text(" w[meV] a2f and integrated 2*a2f/w for 1 smearing values\n1.0 0.3 0.3\n2.0 0.1 0.4\n")
+    assert read_a2f(str(p), fmt="epw").n_smearings == 1
+
+
+def test_footer_before_data_and_duplicate_footer(tmp_path):
+    fb = tmp_path / "fb.a2f"
+    fb.write_text(" Phonon smearing (meV)\n  #  0.5\n1.0 0.3 0.3\n2.0 0.1 0.4\n")
+    with pytest.raises(A2FParseError) as e:
+        read_a2f(str(fb), fmt="epw")
+    assert e.value.code == "footer_before_data"
+    dup = tmp_path / "dup.a2f"
+    dup.write_text("1.0 0.3 0.3\n2.0 0.1 0.4\n Fermi window (eV) 0.3\n Fermi window (eV) 0.3\n")
+    with pytest.raises(A2FParseError) as e:
+        read_a2f(str(dup), fmt="epw")
+    assert e.value.code == "epw_duplicate_footer"
+
+
+def test_footer_values_not_borrowed(tmp_path):
+    # 'Phonon smearing (meV)' with no value line, then 'Electron smearing (eV) 0.05':
+    # the electron value must NOT be borrowed; the missing values get their own code.
+    p = tmp_path / "b.a2f"
+    p.write_text("1.0 0.3 0.3\n2.0 0.1 0.4\n Phonon smearing (meV)\nElectron smearing (eV)   0.05\n")
+    with pytest.raises(A2FParseError) as e:
+        read_a2f(str(p), fmt="epw")
+    assert e.value.code == "epw_footer_missing_values"
+
+
+def test_qe_lambda_nan_rejected_in_reader(tmp_path):
+    p = tmp_path / "q.dos"
+    p.write_text("#  frequencies in Rydberg\n0.001 0.05 0.05\n0.002 0.30 0.30\n lambda = nan   Delta = 0.001\n")
+    with pytest.raises(A2FParseError) as e:
+        read_a2f(str(p))
+    assert e.value.code == "non_finite_footer" and e.value.exit_code == 2
+
+
+def test_epw_integrated_coupling_nonfinite_rejected(tmp_path):
+    p = tmp_path / "ic.a2f"
+    p.write_text("1.0 0.3 0.3\n2.0 0.1 0.4\n Integrated el-ph coupling\n  #  inf\n Phonon smearing (meV)\n  #  0.5\n")
+    with pytest.raises(A2FParseError) as e:
+        read_a2f(str(p), fmt="epw")
+    assert e.value.code == "non_finite_footer" and e.value.exit_code == 2

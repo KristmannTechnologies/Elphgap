@@ -163,7 +163,7 @@ def test_bad_params_exit4(pb):
 
 def test_negative_default_exit2_clamp_ok(tmp_path):
     p = tmp_path / "neg.a2f"
-    p.write_text(" Fermi window (eV) 0.3\n1.0 0.1 0.2\n2.0 -0.05 0.3\n3.0 0.3 0.6\n")
+    p.write_text("1.0 0.1 0.2\n2.0 -0.05 0.3\n3.0 0.3 0.6\n")
     assert run("inspect", str(p), "--format", "epw").returncode == 2
     assert run("inspect", str(p), "--format", "epw", "--clamp-negative").returncode == 0
 
@@ -198,8 +198,8 @@ def test_multismearing_negative_col2_column_required_first(tmp_path):
     # NOT exit 2 (negative) — the missing choice is checked first.
     p = tmp_path / "s.a2f"
     p.write_text(
-        " Phonon smearing (meV)\n  #  0.1  0.2\n"
         "1.0 -0.05 0.09 0.05 0.04\n5.0 0.40 0.38 0.30 0.28\n10.0 0.10 0.09 0.55 0.52\n"
+        " Phonon smearing (meV)\n  #  0.1  0.2\n"
     )
     r = run("tc", str(p), "--format", "epw")
     assert r.returncode == 4 and "column_required" in r.stderr
@@ -207,9 +207,28 @@ def test_multismearing_negative_col2_column_required_first(tmp_path):
 
 def test_broken_midblock_exit2(tmp_path):
     p = tmp_path / "b.a2f"
-    p.write_text(" Fermi window (eV) 0.3\n1.0 0.1 0.1\nBROKEN 0.2 0.3\n3.0 0.3 0.6\n")
+    p.write_text("1.0 0.1 0.1\nBROKEN 0.2 0.3\n3.0 0.3 0.6\n")
     r = run("inspect", str(p), "--format", "epw")
     assert r.returncode == 2 and "malformed_row" in r.stderr
+
+
+def test_broken_edge_lines_exit2(tmp_path):
+    first = tmp_path / "first.a2f"
+    first.write_text("BROKEN 0.1 0.0\n1.0 0.3 0.3\n2.0 0.1 0.4\n")
+    assert run("inspect", str(first), "--format", "epw").returncode == 2
+    last = tmp_path / "last.a2f"
+    last.write_text("1.0 0.3 0.3\n2.0 0.1 0.4\nBROKEN 0.1 0.0\n")
+    assert run("inspect", str(last), "--format", "epw").returncode == 2
+
+
+def test_nonfinite_footer_same_exit_human_and_json(tmp_path):
+    # The gate divergence: QE lambda=nan must be exit 2 in BOTH human and JSON.
+    p = tmp_path / "q.dos"
+    p.write_text("#  frequencies in Rydberg\n0.001 0.05 0.05\n0.002 0.30 0.30\n lambda = nan   Delta = 1e-3\n")
+    human = run("inspect", str(p))
+    js = run("inspect", str(p), "--json")
+    assert human.returncode == 2 and js.returncode == 2
+    assert "non_finite_footer" in human.stderr and "non_finite_footer" in js.stderr
 
 
 def _qe_file(tmp_path):
