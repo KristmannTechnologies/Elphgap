@@ -89,6 +89,27 @@ print(f"Tc (isotropic ME): {result.tc_kelvin:.1f} K")
 Anisotropic (multi-band) usage: see `benchmarks/mgb2_twoband.py` — the
 canonical MgB₂ two-band model (Golubov 2002 coupling matrix) end-to-end.
 
+## Command line (isotropic)
+
+`pip install -e .` (or a built wheel — `python -m build` then
+`pip install dist/elphgap-*.whl`) puts an `elphgap` console script on your PATH.
+It reads an isotropic α²F spectrum from a Quantum ESPRESSO `a2F.dos`
+(frequencies in Ry) or EPW `prefix.a2f` (meV, per-smearing columns) file:
+
+```bash
+elphgap inspect examples/pb_like.a2f          # format, units, λ, ω_log, input SHA256
+elphgap tc examples/pb_like.a2f --mu-star 0.10 # isotropic Migdal-Eliashberg Tc + conventions
+elphgap tc examples/pb_like.a2f --json         # machine-readable
+```
+
+Isotropic only — for an anisotropic Tc use the Python API
+(`tc_aniso_linearized`). The CLI never clips silently (ω≤0 rows and negative
+α²F are dropped/clamped *and reported*), makes the EPW smearing-column choice
+explicit (`--column N`), and uses exit codes 0/2/3/4 (ok / parse error /
+Tc censored / bad parameters). Full walkthrough and the synthetic Pb-like
+example: [`docs/quickstart.md`](docs/quickstart.md); scope, troubleshooting, and
+a GPL-3.0 usage FAQ are under [`docs/`](docs/).
+
 ## μ* convention (read this before feeding literature λᵢⱼ)
 
 The anisotropic solver sums `Σⱼ wⱼ · λ_solver(i,j)`. Standard band-resolved
