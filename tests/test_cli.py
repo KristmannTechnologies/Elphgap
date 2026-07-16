@@ -1,4 +1,4 @@
-"""CLI tests: subprocess smoke, JSON schema, and exit codes (0/2/3/4).
+"""CLI tests: subprocess smoke, JSON manifest schema, and exit codes (0/2/3/4/5).
 
 Invoked as `python -m elphgap ...` so the tests pass whether elphgap is
 installed or only on PYTHONPATH (the src dir is forwarded to the child).
@@ -10,6 +10,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 import elphgap
@@ -17,41 +18,50 @@ import elphgap
 SRC_DIR = str(Path(elphgap.__file__).resolve().parents[1])  # .../src
 
 
-def run(*args, cwd=None):
+def run(*args):
     env = {**os.environ, "PYTHONPATH": SRC_DIR + os.pathsep + os.environ.get("PYTHONPATH", "")}
     return subprocess.run(
-        [sys.executable, "-m", "elphgap", *args],
-        capture_output=True, text=True, env=env, cwd=cwd,
+        [sys.executable, "-m", "elphgap", *args], capture_output=True, text=True, env=env
     )
 
 
-@pytest.fixture
-def qe(tmp_path):
-    p = tmp_path / "a2F.dos"
-    p.write_text(
-        "#  frequencies in Rydberg\n"
-        + "\n".join(
-            f"{w:.6f}  {a:.6f}"
-            for w, a in [(0.001, 0.05), (0.002, 0.30), (0.003, 0.60), (0.004, 0.35), (0.005, 0.10)]
-        )
-        + "\n"
+def _cum_lambda(omega, a2f):
+    wpos = np.where(omega > 0, omega, 1e-9)
+    integ = 2.0 * a2f / wpos
+    integ[omega <= 0] = 0.0
+    return np.concatenate(([0.0], np.cumsum(0.5 * (integ[1:] + integ[:-1]) * np.diff(omega))))
+
+
+def _write_epw(path, omega, a2f_cols, smearings):
+    lam = [_cum_lambda(omega, a) for a in a2f_cols]
+    cols = [omega, *a2f_cols, *lam]
+    lines = ["".join(f"{c[i]:14.7f}" for c in cols) for i in range(omega.size)]
+    footer = (
+        " Phonon smearing (meV)\n  #  " + "  ".join(f"{s:.6f}" for s in smearings) + "\n"
+        " Fermi window (eV) 0.3\n"
     )
-    return str(p)
+    Path(path).write_text("\n".join(lines) + "\n" + footer)
+    return str(path)
 
 
 @pytest.fixture
-def epw_strong(tmp_path):
-    # lambda ~ 1.2, omega peak ~ 8 meV -> a finite, resolvable Tc.
-    import numpy as np
-
-    w = np.linspace(0.0, 20.0, 81)
-    g = np.exp(-0.5 * ((w - 8.0) / 2.0) ** 2)
+def pb(tmp_path):
+    w = np.linspace(0.0, 12.0, 121)
+    wpos = np.where(w > 0, w, 1e-9)
+    g = np.exp(-0.5 * ((w - 4.5) / 1.0) ** 2) + 0.75 * np.exp(-0.5 * ((w - 8.5) / 1.2) ** 2)
     g[0] = 0.0
-    a2f = np.zeros_like(w)
-    a2f[1:] = 1.2 / (2.0 * np.trapezoid((g / np.where(w > 0, w, 1))[1:], w[1:])) * g[1:]
-    p = tmp_path / "strong.a2f"
-    p.write_text("# w[meV] a2F\n" + "\n".join(f"{wi:.6f} {ai:.6f}" for wi, ai in zip(w, a2f)) + "\n")
-    return str(p)
+    a2f = g * (1.2 / (2.0 * np.trapezoid((g / wpos)[1:], w[1:])))
+    return _write_epw(tmp_path / "pb.a2f", w, [a2f], [0.5])
+
+
+@pytest.fixture
+def sweep(tmp_path):
+    w = np.linspace(0.0, 12.0, 121)
+    wpos = np.where(w > 0, w, 1e-9)
+    g = np.exp(-0.5 * ((w - 6.0) / 1.5) ** 2)
+    g[0] = 0.0
+    a = g * (1.2 / (2.0 * np.trapezoid((g / wpos)[1:], w[1:])))
+    return _write_epw(tmp_path / "sweep.a2f", w, [a, 0.95 * a], [0.1, 0.2])
 
 
 def test_version():
@@ -59,70 +69,116 @@ def test_version():
     assert r.returncode == 0 and "elphgap" in r.stdout
 
 
-def test_inspect_human(qe):
-    r = run("inspect", qe)
+def test_inspect_human_shows_smearings(pb):
+    r = run("inspect", pb)
     assert r.returncode == 0
-    assert "lambda" in r.stdout and "omega_log" in r.stdout
+    assert "lambda" in r.stdout and "a2F smearing columns" in r.stdout and "omega_log" in r.stdout
 
 
-def test_inspect_json_schema(qe):
-    r = run("inspect", qe, "--json")
+def test_inspect_json_manifest(pb):
+    r = run("inspect", pb, "--json")
     assert r.returncode == 0
-    doc = json.loads(r.stdout)
-    assert doc["command"] == "inspect"
-    assert doc["elphgap_version"] == elphgap.__version__
-    assert doc["format"]["name"] == "qe"
-    assert doc["input"]["sha256"] and len(doc["input"]["sha256"]) == 64
-    assert doc["spectrum"]["lambda"] > 0
-    assert "omega_log_mev" in doc["spectrum"]
+    d = json.loads(r.stdout)
+    assert d["schema_version"] == "1" and d["command"] == "inspect"
+    assert d["elphgap_version"] == elphgap.__version__
+    assert d["format"]["name"] == "epw" and d["format"]["n_smearings"] == 1
+    assert len(d["input"]["sha256"]) == 64 and d["input"]["bytes"] > 0
+    assert d["spectrum"]["lambda"] > 0 and d["spectrum"]["omega_units"] == "meV"
+    assert isinstance(d["smearings"], list) and d["smearings"][0]["column"] == 2
+    assert all("code" in w and "message" in w for w in d["warnings"])  # structured
 
 
-def test_tc_json_schema_and_value(epw_strong):
-    r = run("tc", epw_strong, "--format", "epw", "--json")
+def test_tc_json_manifest_and_conventions(pb):
+    r = run("tc", pb, "--json")
     assert r.returncode == 0
-    doc = json.loads(r.stdout)
-    assert doc["command"] == "tc"
-    assert doc["censored"] is False
-    assert doc["tc_kelvin"] > 0
-    conv = doc["conventions"]
-    assert conv["mu_star"] == 0.10 and conv["cutoff_factor"] == 10.0 and conv["n_max"] == 512
-    assert conv["omega_c_mev"] == pytest.approx(10.0 * doc["spectrum"]["omega_max_mev"])
+    d = json.loads(r.stdout)
+    assert d["command"] == "tc" and d["tc"]["censored"] is False and d["tc"]["tc_K"] > 0
+    c = d["conventions"]
+    assert c["mu_star"] == 0.10 and c["n_max"] == 4096  # library default, not 512
+    assert "mu_star_convention" in c and c["output_units"] == "K"
+    assert c["omega_c_meV"] == pytest.approx(10.0 * d["spectrum"]["omega_max_meV"])
+    assert c["t_floor_K"] > 0 and c["t_max_K"] == 2000.0 and c["rtol"] == 1e-3
 
 
-def test_tc_censored_exit3(epw_strong):
-    # Weak effective coupling via very high mu* + tiny n_max -> below the floor.
-    r = run("tc", epw_strong, "--format", "epw", "--mu-star", "0.9", "--n-max", "8", "--json")
+def test_tc_fast_sets_nmax_512(pb):
+    d = json.loads(run("tc", pb, "--fast", "--json").stdout)
+    assert d["conventions"]["n_max"] == 512
+
+
+def test_tc_human_states_units(pb):
+    r = run("tc", pb)
+    assert r.returncode == 0
+    assert " K" in r.stdout and "meV" in r.stdout and "output units: K" in r.stdout
+
+
+def test_tc_multismearing_requires_column(sweep):
+    r = run("tc", sweep, "--format", "epw")
+    assert r.returncode == 4 and "column_required" in r.stderr
+    ok = run("tc", sweep, "--format", "epw", "--column", "3")
+    assert ok.returncode == 0
+
+
+def test_inspect_multismearing_shows_all(sweep):
+    d = json.loads(run("inspect", sweep, "--format", "epw", "--json").stdout)
+    assert d["format"]["n_smearings"] == 2 and len(d["smearings"]) == 2
+    assert {r["column"] for r in d["smearings"]} == {2, 3}
+
+
+def test_tc_censored_exit3(tmp_path):
+    # Genuinely weak coupling (lambda ~ 0.25): Tc falls below the --fast floor.
+    w = np.linspace(0.0, 12.0, 121)
+    wpos = np.where(w > 0, w, 1e-9)
+    g = np.exp(-0.5 * ((w - 6.0) / 1.5) ** 2)
+    g[0] = 0.0
+    a2f = g * (0.25 / (2.0 * np.trapezoid((g / wpos)[1:], w[1:])))
+    weak = _write_epw(tmp_path / "weak.a2f", w, [a2f], [0.5])
+    r = run("tc", weak, "--mu-star", "0.16", "--fast", "--json")
     assert r.returncode == 3
-    assert json.loads(r.stdout)["censored"] is True
+    d = json.loads(r.stdout)
+    assert d["tc"]["censored"] is True and d["tc"]["tc_K"] == 0.0
 
 
-def test_bad_mu_star_exit4(epw_strong):
-    r = run("tc", epw_strong, "--mu-star", "1.5")
-    assert r.returncode == 4 and "mu-star" in r.stderr
+def test_tc_solver_error_exit5(tmp_path):
+    # Extreme coupling (lambda ~ 50) at high omega: bisection cannot bracket Tc
+    # below t_max -> RuntimeError -> exit 5.
+    w = np.linspace(1.0, 600.0, 300)
+    g = np.exp(-0.5 * ((w - 400.0) / 20.0) ** 2)
+    a2f = g * (50.0 / (2.0 * np.trapezoid(g / w, w)))
+    extreme = _write_epw(tmp_path / "extreme.a2f", w, [a2f], [0.5])
+    r = run("tc", extreme, "--format", "epw", "--n-max", "8")
+    assert r.returncode == 5 and "error[solver_no_bracket]" in r.stderr
 
 
-def test_column_one_exit4(qe):
-    r = run("inspect", qe, "--column", "1")
-    assert r.returncode == 4 and "column" in r.stderr
+def test_cumulative_column_exit4(pb):
+    r = run("inspect", pb, "--column", "3")
+    assert r.returncode == 4 and "column_is_lambda" in r.stderr
+
+
+def test_bad_params_exit4(pb):
+    assert run("tc", pb, "--mu-star", "1.5").returncode == 4
+    assert run("tc", pb, "--cutoff-factor", "0").returncode == 4
+    assert run("tc", pb, "--n-max", "2").returncode == 4
+    assert run("inspect", pb, "--format", "zzz").returncode == 4
+
+
+def test_negative_default_exit2_clamp_ok(tmp_path):
+    p = tmp_path / "neg.a2f"
+    p.write_text(" Fermi window (eV) 0.3\n1.0 0.1 0.2\n2.0 -0.05 0.3\n3.0 0.3 0.6\n")
+    assert run("inspect", str(p), "--format", "epw").returncode == 2
+    assert run("inspect", str(p), "--format", "epw", "--clamp-negative").returncode == 0
 
 
 def test_missing_file_exit2(tmp_path):
     r = run("inspect", str(tmp_path / "nope.a2f"))
-    assert r.returncode == 2 and "parse error" in r.stderr
+    assert r.returncode == 2 and "error[unreadable]" in r.stderr
 
 
-def test_broken_file_exit2(tmp_path):
-    p = tmp_path / "broken.a2f"
-    p.write_text("1.0 0.1\n2.0 oops\n3.0 0.3\n")
-    r = run("inspect", str(p), "--format", "epw")
-    assert r.returncode == 2
+def test_json_has_no_nan(pb):
+    out = run("tc", pb, "--json").stdout
+    assert "NaN" not in out and "Infinity" not in out
+    json.loads(out)  # strict parse succeeds
 
 
-def test_unknown_flag_exit4(qe):
-    r = run("inspect", qe, "--bogus")
-    assert r.returncode == 4
-
-
-def test_no_subcommand_exit4():
-    r = run()
-    assert r.returncode == 4
+def test_usage_errors_exit4(pb):
+    assert run("inspect", pb, "--bogus").returncode == 4
+    assert run().returncode == 4
