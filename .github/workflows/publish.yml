@@ -2,13 +2,18 @@
 # PyPI Trusted Publishing (OIDC, no API token). MANUAL DISPATCH ONLY.
 #
 # This workflow has NO push/tag/release trigger, so merging it publishes
-# nothing. It CAN publish, however, once (1) a Trusted Publisher for the
-# `elphgap` project is registered on PyPI pointing at this repo + this workflow
-# file + the `pypi` environment, and (2) the `pypi` GitHub environment exists
-# with required reviewers. Until both are configured, a manual dispatch simply
-# fails at the OIDC exchange. It is therefore gated, not inert.
+# nothing. It CAN publish, however, once a Trusted Publisher for the `elphgap`
+# project is registered on PyPI pointing at this repo + this workflow file + the
+# `pypi` environment. Until then a manual dispatch fails at the OIDC exchange.
+# It is therefore gated, not inert.
 #
-# Guards baked in: it must be dispatched from an annotated version tag (refs/
+# IMPORTANT: `environment: pypi` below does NOT by itself require approvals.
+# GitHub auto-creates a referenced-but-missing environment WITHOUT protection,
+# so required reviewers / branch-and-tag rules must be configured in the repo
+# settings (Settings > Environments > pypi). That protection is repository
+# configuration, not a property of this YAML.
+#
+# Guards baked into this file: it must be dispatched from a version tag (refs/
 # tags/vX.Y.Z) whose version equals elphgap.__version__, it runs `twine check`,
 # and every action is pinned to a commit SHA.
 # Refs: https://docs.pypi.org/trusted-publishers/using-a-publisher/
@@ -55,7 +60,7 @@ jobs:
     name: Publish to PyPI
     needs: build
     runs-on: ubuntu-latest
-    environment: pypi              # create this environment (with reviewers) before use
+    environment: pypi              # protection (reviewers) must be set in repo Settings > Environments; not enforced by this YAML
     permissions:
       id-token: write              # OIDC token for trusted publishing (no secret)
     steps:

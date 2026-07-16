@@ -34,6 +34,11 @@
   3.11–3.14 plus a fresh wheel/sdist install (no JAX) that runs the advertised
   examples; a prepared, dispatch-only PyPI Trusted-Publishing workflow is
   included (SHA-pinned, tag==version guarded — it does not publish on merge).
+- **CITATION.cff** is bumped to `version: 0.1.1`, but its top-level `doi` and
+  `date-released` (which denote a specific *published* version) are omitted while
+  v0.1.1 is unreleased — pinning them to v0.1.0's values would be
+  machine-inconsistent with the version. The concept DOI (all versions) is kept;
+  a versioned DOI and release date are restored at the actual release.
 
 ### Solver numerics
 - **No solver-numerics change in the v0.1.1 preparation itself.** The diff

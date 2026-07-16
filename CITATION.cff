@@ -1,13 +1,9 @@
 cff-version: 1.2.0
-message: "If you use elphgap, please cite it via the Zenodo DOI below."
-# DOI and date-released still point to v0.1.0: a new version DOI is minted at the
-# actual v0.1.1 release. The concept DOI (below) resolves to all versions.
-doi: 10.5281/zenodo.21284954
-date-released: "2026-07-09"
+message: "If you use elphgap, please cite it. A versioned Zenodo DOI is minted at each release; the concept DOI below resolves to all versions."
+# No top-level `doi`/`date-released` while v0.1.1 is unreleased: both denote a
+# specific PUBLISHED version, so pinning them to v0.1.0's values would contradict
+# `version: 0.1.1`. They are added back at the actual v0.1.1 release (see CHANGELOG).
 identifiers:
-  - type: doi
-    value: "10.5281/zenodo.21284954"
-    description: "Version DOI for v0.1.0 (v0.1.1 version DOI minted at release)"
   - type: doi
     value: "10.5281/zenodo.21284953"
     description: "Concept DOI (all versions)"
