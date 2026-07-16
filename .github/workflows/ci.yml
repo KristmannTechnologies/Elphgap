@@ -1,9 +1,10 @@
 name: CI
 
-# Runs the pytest suite on the single combination verified locally for the
-# v0.1.1 preparation: macOS + CPython 3.12. Other OS / Python combinations are
-# deliberately NOT included — they were not tested locally, and this project
-# ships only tested matrices. Add rows here after you have actually run them.
+# Full pytest suite across the advertised support matrix (Ubuntu + macOS x
+# CPython 3.11-3.14 — matches the pyproject classifiers), plus an artifact job
+# that builds the wheel/sdist, installs them into a fresh venv OUTSIDE the
+# checkout, and runs the advertised CLI examples WITHOUT JAX. Actions are pinned
+# to commit SHAs.
 
 on:
   push:
@@ -11,18 +12,57 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   test:
-    name: pytest (macOS, Python 3.12)
-    runs-on: macos-latest
+    name: pytest (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b  # v5.3.0
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
       - name: Install (reference solvers + CPU JAX + test deps)
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[cpu-jax,test]"
-      - name: Run tests
-        run: pytest -q
+      - run: pytest -q
+
+  artifact:
+    name: build + fresh install (no JAX) + advertised examples
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b  # v5.3.0
+        with:
+          python-version: "3.12"
+      - name: Build wheel + sdist and metadata-check
+        run: |
+          python -m pip install --upgrade build twine
+          python -m build
+          twine check dist/*
+      - name: Install the WHEEL in a fresh venv outside the checkout (numpy+scipy only)
+        run: |
+          cd "$RUNNER_TEMP"
+          python -m venv wheelvenv
+          ./wheelvenv/bin/pip install "$GITHUB_WORKSPACE"/dist/*.whl
+          ./wheelvenv/bin/python -c "import elphgap; print('version', elphgap.__version__)"
+          ./wheelvenv/bin/elphgap --version
+          EX=$(./wheelvenv/bin/python -c "import elphgap; print(elphgap.example_a2f_path())")
+          ./wheelvenv/bin/elphgap inspect "$EX"
+          ./wheelvenv/bin/elphgap tc "$EX" --mu-star 0.10
+          ./wheelvenv/bin/elphgap tc "$EX" --json > /dev/null
+      - name: Install the SDIST in a fresh venv outside the checkout
+        run: |
+          cd "$RUNNER_TEMP"
+          python -m venv sdistvenv
+          ./sdistvenv/bin/pip install "$GITHUB_WORKSPACE"/dist/*.tar.gz
+          EX=$(./sdistvenv/bin/python -c "import elphgap; print(elphgap.example_a2f_path())")
+          ./sdistvenv/bin/elphgap tc "$EX" --json > /dev/null
