@@ -81,6 +81,7 @@ def load_database(path: str) -> list[Material]:
 
 RY_TO_MEV = 13605.693  # 1 Rydberg in meV; QE a2F.dos frequencies are in Ry.
 _LAMBDA_CROSSCHECK_TOL = 0.05  # warn if 2*int(a2F/w) differs >5% from the file's cumulative lambda
+_MONO_TOL = 1e-6  # relative tolerance for the cumulative-lambda monotonicity check
 
 
 @dataclass(frozen=True)
@@ -136,7 +137,8 @@ class A2FSpectrum:
     n_smearings: int  # EPW: N; QE: 1 (the total)
     primary_a2f_columns: list[int]  # 1-based columns selectable as a smearing's a2F
     smearing_meV: list[float] | None  # EPW footer smearing values (len N) or None
-    a2f_by_column: dict[int, np.ndarray]  # cleaned a2F for each primary column (inspect table)
+    a2f_by_column: dict[int, np.ndarray]  # a2F per primary column (selected: policy-cleaned; others: raw)
+    negatives_by_column: dict[int, int]  # count of negative a2F values per primary column (never silent)
     lambda_from_file: dict[int, float]  # integrated lambda per primary column, from cumulative-lambda col
     lambda_footer: float | None  # QE footer "lambda =" value, if present
     n_points_raw: int
@@ -209,6 +211,7 @@ def read_a2f(
     column: int | None = None,
     clip_below_mev: float = 0.0,
     clamp_negative: bool = False,
+    require_column: bool = False,
 ) -> A2FSpectrum:
     """Read an isotropic alpha^2F(omega) spectrum from a QE or EPW output file.
 
@@ -232,12 +235,17 @@ def read_a2f(
           drops only omega <= 0 (the a2F/omega moments are singular there).
     clamp_negative : if False (default), any negative a2F in the selected column
           is a hard error; if True, negatives are clamped to 0 and counted.
+    require_column : if True and no `column` is given for a multi-smearing EPW
+          file, raise column_required (exit 4) BEFORE selecting/validating any
+          default column (used by `tc`; `inspect` leaves it False and shows all).
 
     Raises A2FParseError (exit 2) for broken/malformed/non-official files and
     A2FColumnError (exit 4) for invalid format/column/clip choices.
     """
     if fmt.lower() not in ("auto", "qe", "epw"):
         raise A2FColumnError("unknown_format", f"unknown format {fmt!r}; use 'qe', 'epw', or 'auto'")
+    if not np.isfinite(clip_below_mev):
+        raise A2FColumnError("clip_not_finite", f"clip-below must be finite; got {clip_below_mev}")
     if clip_below_mev < 0.0:
         raise A2FColumnError("clip_negative", f"clip-below must be >= 0 meV; got {clip_below_mev}")
 
@@ -250,8 +258,13 @@ def read_a2f(
     n_bytes = len(raw_bytes)
     text = raw_bytes.decode("utf-8", errors="replace")
 
+    # Block grammar: header (comments/text) -> a CONTIGUOUS numeric data block ->
+    # footer (comments/text). A non-numeric uncommented line inside the block
+    # ends it; any numeric row after that (interleaved corruption) is a
+    # malformed_row, not silently skipped.
     comment_parts: list[str] = []
     rows: list[list[float]] = []
+    state = "header"  # -> "block" (>=1 numeric row) -> "footer" (text after block)
     for lineno, raw_line in enumerate(text.splitlines(), 1):
         cut = len(raw_line)
         for marker in ("#", "!"):
@@ -259,22 +272,34 @@ def read_a2f(
             if i != -1:
                 cut = min(cut, i)
         if cut < len(raw_line):
-            comment_parts.append(raw_line[cut:])
+            comment_parts.append(raw_line[cut:])  # commented text is always a comment
         data_part = raw_line[:cut].strip()
         if not data_part:
             continue
         tokens = data_part.split()
+        is_numeric = True
         try:
             float(tokens[0])
         except ValueError:
-            comment_parts.append(data_part)  # text footer/label, e.g. "lambda = 1.0"
-            continue
-        try:
-            rows.append([float(t) for t in tokens])
-        except ValueError as exc:
-            raise A2FParseError(
-                "malformed_row", f"{path}:{lineno}: expected a numeric data row, got {data_part!r}"
-            ) from exc
+            is_numeric = False
+        if is_numeric:
+            if state == "footer":
+                raise A2FParseError(
+                    "malformed_row",
+                    f"{path}:{lineno}: numeric data {data_part!r} after the data block ended at a "
+                    "non-numeric line — corrupt or interleaved rows, refusing to skip.",
+                )
+            try:
+                rows.append([float(t) for t in tokens])
+            except ValueError as exc:
+                raise A2FParseError(
+                    "malformed_row", f"{path}:{lineno}: expected a numeric data row, got {data_part!r}"
+                ) from exc
+            state = "block"
+        else:
+            comment_parts.append(data_part)  # header text, or footer label ("lambda = 1.0")
+            if state == "block":
+                state = "footer"
 
     if len(rows) < 2:
         raise A2FParseError(
@@ -288,6 +313,10 @@ def read_a2f(
                 "ragged_columns",
                 f"{path}: inconsistent column count (row 1 has {ncol}, data row {k + 1} has {len(row)}).",
             )
+    if ncol < 2:
+        raise A2FParseError(
+            "too_few_columns", f"{path}: data block has {ncol} column(s); need >= 2 (omega + a2F)."
+        )
     data = np.asarray(rows, dtype=np.float64)
     if not np.all(np.isfinite(data)):
         raise A2FParseError("non_finite", f"{path}: data block contains NaN or Inf; refusing to guess.")
@@ -322,14 +351,34 @@ def read_a2f(
         column_kinds = ["omega"] + ["a2f"] * n_smearings + ["lambda_cumulative"] * n_smearings
         primary_a2f_columns = list(range(2, n_smearings + 2))
         lambda_cols = {c: n_smearings + c for c in primary_a2f_columns}  # a2F col -> its cumulative-lambda col
+        # Hard-check every footer count that encodes N against the column-derived N.
         smearing_meV = _parse_labeled_floats(comment_parts, "phonon smearing (mev)")
-        if smearing_meV is not None and len(smearing_meV) != n_smearings:
-            warnings.append(
-                A2FWarning("smearing_count_mismatch", f"footer lists {len(smearing_meV)} smearing values but the block implies N={n_smearings}.")
-            )
-            smearing_meV = None
+        coupling_vals = _parse_labeled_floats(comment_parts, "integrated el-ph coupling")
+        for label, vals in (("Phonon smearing (meV)", smearing_meV), ("Integrated el-ph coupling", coupling_vals)):
+            if vals is not None and len(vals) != n_smearings:
+                raise A2FParseError(
+                    "epw_smearing_count_mismatch",
+                    f"{path}: footer '{label}' lists {len(vals)} value(s) but the {ncol}-column block "
+                    f"implies N={n_smearings} smearings (1+2N). The file is internally inconsistent.",
+                )
+        if smearing_meV is not None and not np.all(np.isfinite(smearing_meV)):
+            raise A2FParseError("non_finite_footer", f"{path}: footer smearing values contain NaN/Inf.")
         if detection == "forced" and "frequencies in rydberg" in comment_text:
             warnings.append(A2FWarning("format_forced_mismatch", "forced --format epw but the file declares Rydberg frequencies."))
+
+    # Demand an explicit column for a smearing sweep BEFORE selecting/validating
+    # any default column (so a missing --column is exit 4, ahead of any
+    # column-specific data error such as a negative default column).
+    if require_column and column is None and len(primary_a2f_columns) > 1:
+        opts = ", ".join(
+            f"col {c}" + (f" ({smearing_meV[c - 2]:g} meV)" if smearing_meV else "")
+            for c in primary_a2f_columns
+        )
+        raise A2FColumnError(
+            "column_required",
+            f"this EPW file has {n_smearings} a2F smearing columns; choose one with --column N "
+            f"(no canonical default). Options: {opts}. Run `inspect` to see each column's lambda.",
+        )
 
     # Column selection.
     if column is None:
@@ -368,14 +417,17 @@ def read_a2f(
     if not np.all(np.diff(omega) > 0.0):
         raise A2FParseError("not_increasing", f"{path}: omega is not strictly increasing after cleaning (duplicate/unsorted).")
 
-    # Clean a2F for every primary column (inspect table); apply the negative
-    # policy strictly to the SELECTED column (the one that reaches the solver).
+    # a2F per primary column. The SELECTED column carries the negative policy
+    # (reject by default; clamp only with clamp_negative). Non-selected columns
+    # are kept RAW (never silently clamped); their negative count is reported.
     a2f_by_column: dict[int, np.ndarray] = {}
+    negatives_by_column: dict[int, int] = {}
     clamped_selected = 0
     most_negative_selected = 0.0
     for c in sorted(set(primary_a2f_columns) | {col}):  # include a QE per-mode selection
         vals = data[keep, c - 1].copy()
         n_neg = int((vals < 0.0).sum())
+        negatives_by_column[c] = n_neg
         if c == col and n_neg:
             most_negative_selected = float(vals.min())
             if not clamp_negative:
@@ -385,29 +437,34 @@ def read_a2f(
                     f"Pass --clamp-negative to clamp to 0 (only appropriate for numerical noise).",
                 )
             clamped_selected = n_neg
-            warnings.append(A2FWarning("clamped_negative", f"clamped {n_neg} negative a2F value(s) to 0 in column {c} (min {vals.min():.3e})."))
-        vals[vals < 0.0] = 0.0  # non-selected columns clamp for display only
+            vals = np.where(vals < 0.0, 0.0, vals)
+            warnings.append(A2FWarning("clamped_negative", f"clamped {n_neg} negative a2F value(s) to 0 in column {c} (min {most_negative_selected:.3e})."))
+        elif n_neg:
+            warnings.append(A2FWarning("negative_a2f_other", f"a2F column {c} (not selected) has {n_neg} negative value(s), left unclamped."))
         a2f_by_column[c] = vals
 
     a2f = a2f_by_column[col]
     if not np.any(a2f > 0.0):
         raise A2FParseError("no_positive_a2f", f"{path}: selected a2F column {col} has no positive values.")
 
-    # lambda cross-check against the file's cumulative-lambda column (EPW only).
+    # EPW: for EVERY smearing, compare 2*int(a2F/omega) (from RAW a2F, as the
+    # file's cumulative lambda was built) against the file's cumulative-lambda
+    # column, and check that column is non-decreasing.
     lambda_from_file: dict[int, float] = {}
     if fmt == "epw":
         for c in primary_a2f_columns:
-            lambda_from_file[c] = float(data[keep, lambda_cols[c] - 1][-1])
-        lam_a2f = 2.0 * float(np.trapezoid(a2f / omega, omega))
-        lam_file = lambda_from_file[col]
-        if lam_file > 1e-9 and abs(lam_a2f - lam_file) / lam_file > _LAMBDA_CROSSCHECK_TOL:
-            warnings.append(
-                A2FWarning(
-                    "lambda_crosscheck",
-                    f"2*int(a2F/omega) = {lam_a2f:.3f} deviates >5% from the file's cumulative "
-                    f"lambda = {lam_file:.3f} (column {col}); check the a2F/lambda column mapping.",
-                )
-            )
+            lam_col = data[keep, lambda_cols[c] - 1]
+            lam_file = float(lam_col[-1])
+            lambda_from_file[c] = lam_file
+            dmin = float(np.min(np.diff(lam_col))) if lam_col.size > 1 else 0.0
+            if dmin < -_MONO_TOL * max(1.0, abs(lam_file)):
+                warnings.append(A2FWarning("epw_lambda_not_monotonic", f"cumulative-lambda column for a2F col {c} is not non-decreasing (min step {dmin:.3e}); the layout may be wrong."))
+            lam_a2f = 2.0 * float(np.trapezoid(data[keep, c - 1] / omega, omega))
+            if lam_file <= 1e-9:
+                if lam_a2f > 1e-6:
+                    warnings.append(A2FWarning("lambda_crosscheck", f"a2F col {c}: file cumulative lambda ~ 0 ({lam_file:.3e}) but 2*int(a2F/omega) = {lam_a2f:.3f} > 0; check the a2F/lambda mapping."))
+            elif abs(lam_a2f - lam_file) / lam_file > _LAMBDA_CROSSCHECK_TOL:
+                warnings.append(A2FWarning("lambda_crosscheck", f"a2F col {c}: 2*int(a2F/omega) = {lam_a2f:.3f} deviates >5% from the file's cumulative lambda = {lam_file:.3f}."))
 
     return A2FSpectrum(
         omega=omega,
@@ -423,6 +480,7 @@ def read_a2f(
         primary_a2f_columns=primary_a2f_columns,
         smearing_meV=smearing_meV,
         a2f_by_column=a2f_by_column,
+        negatives_by_column=negatives_by_column,
         lambda_from_file=lambda_from_file,
         lambda_footer=lambda_footer,
         n_points_raw=int(data.shape[0]),
