@@ -283,8 +283,9 @@ def read_a2f(
     n_bytes = len(raw_bytes)
     text = raw_bytes.decode("utf-8", errors="replace")
 
-    # Grammar: an optional header (comments + the single EPW header line), then a
-    # CONTIGUOUS numeric data block, then a footer of KNOWN QE/EPW lines. Any
+    # Grammar: a header (comments; for EPW the single header line is MANDATORY),
+    # then a CONTIGUOUS numeric data block, then a footer of KNOWN QE/EPW lines
+    # (mandatory per format, in canonical order). Any
     # uncommented line that is neither numeric nor a recognized header/footer form
     # is malformed_row (exit 2), including at the block edges; numeric data after a
     # recognized footer (commented or not) is likewise malformed_row. Footer values
