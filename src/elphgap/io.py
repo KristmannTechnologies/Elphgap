@@ -157,41 +157,51 @@ class A2FSpectrum:
         return len(self.primary_a2f_columns) > 1
 
 
-# Known EPW footer labels (EPW/src/supercond.f90). NEXTLINE labels put their
-# values on the following commented line; SAMELINE labels carry a value inline.
-_FOOTER_NEXTLINE = ("integrated el-ph coupling", "phonon smearing")
-_FOOTER_SAMELINE = ("electron smearing", "fermi window", "summed el-ph coupling")
+# Fixed QE/EPW header/footer line forms (EPW/src/supercond.f90, PHonon/PH/matdyn.f90).
+# Regexes are anchored on the STRIPPED, lowercased line: internal whitespace in the
+# fixed label text is strict (single space, exactly as the official WRITE literals),
+# while numeric padding/spacing is lenient (\s+). SAMELINE records carry their value
+# in group(1) (QE also captures Delta); NEXTLINE records take their values from the
+# immediately following commented line.
+_EPW_HEADER_RE = re.compile(r"^w\[mev\] a2f and integrated 2\*a2f/w for\s+(\d+) smearing values$")
+_EPW_FOOTER = (
+    ("integrated el-ph coupling", re.compile(r"^integrated el-ph coupling$"), "nextline"),
+    ("phonon smearing", re.compile(r"^phonon smearing \(mev\)$"), "nextline"),
+    ("electron smearing", re.compile(r"^electron smearing \(ev\)\s+(\S+)$"), "sameline"),
+    ("fermi window", re.compile(r"^fermi window \(ev\)\s+(\S+)$"), "sameline"),
+    ("summed el-ph coupling", re.compile(r"^summed el-ph coupling\s+(\S+)$"), "sameline"),
+)
+_EPW_FOOTER_ORDER = [rec[0] for rec in _EPW_FOOTER]
+_QE_LAMBDA_RE = re.compile(r"^lambda\s*=\s*(\S+)\s+delta\s*=\s*(\S+)$")
 
 
-def _floats(text: str) -> list[float]:
-    """Every float token in `text`, ignoring '#'/'=' and label/unit words."""
+def _match_footer(low: str) -> tuple[str, str, list[str]] | None:
+    """(label, kind, captured groups) for a known footer LABEL line, else None."""
+    for label, rx, kind in _EPW_FOOTER:
+        m = rx.match(low)
+        if m:
+            return label, kind, list(m.groups())
+    m = _QE_LAMBDA_RE.match(low)
+    if m:
+        return "lambda", "sameline", list(m.groups())
+    return None
+
+
+def _value_line_floats(commented: str) -> list[float] | None:
+    """Floats on a commented value line '  #  0.05  0.10'; None if any token is not a float."""
+    body = commented.lstrip()
+    if body.startswith("#"):
+        body = body[1:]
+    body = body.strip()
+    if not body:
+        return None
     out: list[float] = []
-    for tok in text.replace("#", " ").replace("=", " ").split():
+    for tok in body.split():
         try:
             out.append(float(tok))
         except ValueError:
-            pass
+            return None
     return out
-
-
-def _epw_header_n(low: str) -> int | None:
-    """Parse N from the EPW header ' w[meV] a2f and integrated 2*a2f/w for N smearing values'."""
-    if "smearing values" not in low:
-        return None
-    m = re.search(r"(\d+)\s+smearing values", low)
-    return int(m.group(1)) if m else None
-
-
-def _footer_label(low: str) -> str | None:
-    """The QE/EPW footer label a non-numeric line carries, or None (unknown line)."""
-    if "smearing values" in low:  # the EPW header, not a footer
-        return None
-    for lab in _FOOTER_NEXTLINE + _FOOTER_SAMELINE:
-        if lab in low:
-            return lab
-    if "lambda" in low and "=" in low:  # QE footer " lambda = X   Delta = Y"
-        return "lambda"
-    return None
 
 
 def _detect_format(comment_text: str, fmt: str) -> tuple[str, bool, str]:
@@ -293,16 +303,26 @@ def read_a2f(
             if idx != -1:
                 cut = min(cut, idx)
         commented = raw_line[cut:] if cut < len(raw_line) else None
+        data_part = raw_line[:cut].strip()
+
+        # A pending NEXTLINE footer (Integrated / Phonon smearing) MUST be filled by
+        # the immediately following line, and only by its commented value line — no
+        # borrowing across comments or blanks.
+        if pending_footer is not None:
+            vals = _value_line_floats(commented) if commented is not None else None
+            if data_part or vals is None:
+                raise A2FParseError("footer_malformed", f"{path}:{lineno}: footer '{pending_footer}' value line missing or non-numeric.")
+            footer_values[pending_footer] = vals
+            pending_footer = None
+            comment_parts.append(commented)
+            continue
+
         if commented is not None:
             comment_parts.append(commented)
-            if state == "data" and _footer_label(commented.lower()) is not None:
-                state = "post"  # a footer marker (even commented) ends the data block
-            if pending_footer is not None:
-                vals = _floats(commented)
-                if vals:
-                    footer_values[pending_footer] = vals
-                    pending_footer = None
-        data_part = raw_line[:cut].strip()
+            # A footer marker (even commented) after data ends the block, so a stray
+            # numeric row below it is rejected rather than silently appended.
+            if state == "data" and _match_footer(commented.lstrip(" #").strip().lower()) is not None:
+                state = "post"
         if not data_part:
             continue
 
@@ -316,8 +336,7 @@ def read_a2f(
             if state == "post":
                 raise A2FParseError(
                     "malformed_row",
-                    f"{path}:{lineno}: numeric data {data_part!r} after the footer began — "
-                    "corrupt or interleaved rows, refusing to skip.",
+                    f"{path}:{lineno}: numeric data {data_part!r} after the footer began — corrupt or interleaved rows.",
                 )
             try:
                 rows.append([float(t) for t in data_part.split()])
@@ -328,35 +347,39 @@ def read_a2f(
             state = "data"
             continue
 
-        # Uncommented non-numeric line: must be a known QE/EPW header/footer form.
+        # Uncommented non-numeric line: the EPW header or a known footer label only.
         comment_parts.append(data_part)
         low = data_part.lower()
-        hn = _epw_header_n(low)
-        if hn is not None:
+        m = _EPW_HEADER_RE.match(low)
+        if m:
             if state != "pre":
                 raise A2FParseError("malformed_row", f"{path}:{lineno}: EPW header line after data began: {data_part!r}")
-            header_n_values.append(hn)
+            header_n_values.append(int(m.group(1)))
             continue
-        label = _footer_label(low)
-        if label is None:
+        fm = _match_footer(low)
+        if fm is None:
             raise A2FParseError(
                 "malformed_row",
                 f"{path}:{lineno}: unrecognized non-numeric line {data_part!r} (not a known QE/EPW header/footer form).",
             )
+        label, kind, groups = fm
         if state == "pre":
             raise A2FParseError("footer_before_data", f"{path}:{lineno}: footer line {data_part!r} before any data.")
-        if pending_footer is not None:
-            raise A2FParseError("epw_footer_missing_values", f"{path}:{lineno}: footer '{pending_footer}' has no value line before the next footer entry.")
         state = "post"
         footer_order.append(label)
-        inline = _floats(data_part)
-        if label in _FOOTER_NEXTLINE and not inline:
-            pending_footer = label  # values are on the next commented line
-        else:
-            footer_values[label] = inline
+        if kind == "nextline":
+            pending_footer = label  # value on the immediately following commented line
+        else:  # sameline: the captured value(s) are bound to THIS line and must be numbers
+            bound: list[float] = []
+            for g in groups:
+                try:
+                    bound.append(float(g))
+                except ValueError:
+                    raise A2FParseError("footer_malformed", f"{path}:{lineno}: footer '{label}' value {g!r} is not a number.")
+            footer_values[label] = bound
 
     if pending_footer is not None:
-        raise A2FParseError("epw_footer_missing_values", f"{path}: footer '{pending_footer}' has no value line before end of file.")
+        raise A2FParseError("footer_malformed", f"{path}: footer '{pending_footer}' has no value line before end of file.")
     if len(rows) < 2:
         raise A2FParseError(
             "no_data",
@@ -399,8 +422,12 @@ def read_a2f(
         column_kinds = ["omega", "a2f_total"] + ["a2f_mode"] * (ncol - 2)
         primary_a2f_columns = [2]
         n_smearings = 1
-        if footer_values.get("lambda"):
-            lambda_footer = footer_values["lambda"][0]
+        # Mandatory records: the "frequencies in Rydberg" header and the lambda footer.
+        if "frequencies in rydberg" not in comment_text:
+            raise A2FParseError("qe_header_missing", f"{path}: QE a2F.dos is missing the 'frequencies in Rydberg' header.")
+        if "lambda" not in footer_order:
+            raise A2FParseError("qe_lambda_footer_missing", f"{path}: QE a2F.dos is missing the ' lambda = ... Delta = ...' footer (truncated run?).")
+        lambda_footer = footer_values["lambda"][0]
         if detection == "forced" and any(s in comment_text for s in ("phonon smearing", "el-ph coupling")):
             warnings.append(A2FWarning("format_forced_mismatch", "forced --format qe but the file carries EPW footer markers."))
     else:  # epw
@@ -415,13 +442,23 @@ def read_a2f(
         column_kinds = ["omega"] + ["a2f"] * n_smearings + ["lambda_cumulative"] * n_smearings
         primary_a2f_columns = list(range(2, n_smearings + 2))
         lambda_cols = {c: n_smearings + c for c in primary_a2f_columns}  # a2F col -> its cumulative-lambda col
-        # Header N (present in a real EPW file) must equal (ncol-1)/2.
-        if header_n_values and header_n_values[0] != n_smearings:
+        # Mandatory header: the ' w[meV] ... for N smearing values' line, N == (ncol-1)/2.
+        # A truncated writer run (cut at a record boundary) fails here instead of
+        # silently yielding a short spectrum and wrong Tc.
+        if not header_n_values:
+            raise A2FParseError("epw_header_missing", f"{path}: EPW prefix.a2f is missing the ' w[meV] ... smearing values' header (truncated run?).")
+        if header_n_values[0] != n_smearings:
             raise A2FParseError(
                 "epw_header_n_mismatch",
                 f"{path}: header declares N={header_n_values[0]} smearings but the {ncol}-column block "
                 f"implies N={n_smearings} (1+2N).",
             )
+        # Mandatory footer: the five records in canonical writer order, complete.
+        if footer_order != _EPW_FOOTER_ORDER:
+            missing = [r for r in _EPW_FOOTER_ORDER if r not in footer_order]
+            if missing:
+                raise A2FParseError("epw_footer_incomplete", f"{path}: EPW footer missing record(s) {missing} (truncated run?).")
+            raise A2FParseError("epw_footer_order", f"{path}: EPW footer records out of canonical order: {footer_order}.")
         # Footer counts that encode N must also match.
         smearing_meV = footer_values.get("phonon smearing")
         for label in ("phonon smearing", "integrated el-ph coupling"):
