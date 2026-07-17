@@ -1,8 +1,7 @@
 cff-version: 1.2.0
 message: "If you use elphgap, please cite it. A versioned Zenodo DOI is minted at each release; the concept DOI below resolves to all versions."
-# No top-level `doi`/`date-released` while v0.1.1 is unreleased: both denote a
-# specific PUBLISHED version, so pinning them to v0.1.0's values would contradict
-# `version: 0.1.1`. They are added back at the actual v0.1.1 release (see CHANGELOG).
+# The version DOI for v0.1.1 is added right after Zenodo mints it at release.
+date-released: "2026-07-17"
 identifiers:
   - type: doi
     value: "10.5281/zenodo.21284953"

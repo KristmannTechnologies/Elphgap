@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.1.1 (unreleased)
+## v0.1.1 — 2026-07-17
 
 ### Added — command line and α²F I/O
 - **`elphgap` console script.** `elphgap inspect <file>` reports the detected
