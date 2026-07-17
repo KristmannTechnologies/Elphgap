@@ -3,6 +3,15 @@
 ## v0.1.1 — 2026-07-17
 
 ### Added — command line and α²F I/O
+- **Real EPW 6.0 release layout.** Validated end-to-end against the official
+  FCC-Pb tutorial computed with the EPW 6.0 release: the writer's extra
+  `DOS (eV)` footer record is accepted in its canonical slot
+  (finiteness-checked), and the `a2f_iso` header's smearing-count template
+  artifact (header says 10, data has 1) is tolerated — with warning
+  `epw_header_n_mismatch_tolerated` — only when the complete ordered footer
+  independently confirms the data's column count. Truncated files still
+  exit 2. The real tutorial output is a test fixture; elphgap reproduces
+  EPW's own isotropic Migdal–Eliashberg Tc for Pb to 0.08 %.
 - **`elphgap` console script.** `elphgap inspect <file>` reports the detected
   format, units, every a2F smearing column and its λ (from the spectrum and, for
   EPW, cross-checked against the file's cumulative-λ column), the frequency grid,
