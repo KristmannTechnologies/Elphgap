@@ -169,9 +169,14 @@ _EPW_FOOTER = (
     ("phonon smearing", re.compile(r"^phonon smearing \(mev\)$"), "nextline"),
     ("electron smearing", re.compile(r"^electron smearing \(ev\)\s+(\S+)$"), "sameline"),
     ("fermi window", re.compile(r"^fermi window \(ev\)\s+(\S+)$"), "sameline"),
+    # "DOS (eV)" (N(EF)): written by the EPW 6.0 release a2f writer, absent in
+    # develop/5.3.1 -> OPTIONAL, but pinned to this canonical slot.
+    ("dos", re.compile(r"^dos \(ev\)\s+(\S+)$"), "sameline"),
     ("summed el-ph coupling", re.compile(r"^summed el-ph coupling\s+(\S+)$"), "sameline"),
 )
 _EPW_FOOTER_ORDER = [rec[0] for rec in _EPW_FOOTER]
+_EPW_FOOTER_OPTIONAL = {"dos"}
+_EPW_FOOTER_MANDATORY = [r for r in _EPW_FOOTER_ORDER if r not in _EPW_FOOTER_OPTIONAL]
 _QE_LAMBDA_RE = re.compile(r"^lambda\s*=\s*(\S+)\s+delta\s*=\s*(\S+)$")
 
 
@@ -443,23 +448,43 @@ def read_a2f(
         column_kinds = ["omega"] + ["a2f"] * n_smearings + ["lambda_cumulative"] * n_smearings
         primary_a2f_columns = list(range(2, n_smearings + 2))
         lambda_cols = {c: n_smearings + c for c in primary_a2f_columns}  # a2F col -> its cumulative-lambda col
-        # Mandatory header: the ' w[meV] ... for N smearing values' line, N == (ncol-1)/2.
+        # Mandatory header: the ' w[meV] ... for N smearing values' line.
         # A truncated writer run (cut at a record boundary) fails here instead of
         # silently yielding a short spectrum and wrong Tc.
         if not header_n_values:
             raise A2FParseError("epw_header_missing", f"{path}: EPW prefix.a2f is missing the ' w[meV] ... smearing values' header (truncated run?).")
-        if header_n_values[0] != n_smearings:
-            raise A2FParseError(
-                "epw_header_n_mismatch",
-                f"{path}: header declares N={header_n_values[0]} smearings but the {ncol}-column block "
-                f"implies N={n_smearings} (1+2N).",
-            )
-        # Mandatory footer: the five records in canonical writer order, complete.
-        if footer_order != _EPW_FOOTER_ORDER:
-            missing = [r for r in _EPW_FOOTER_ORDER if r not in footer_order]
-            if missing:
-                raise A2FParseError("epw_footer_incomplete", f"{path}: EPW footer missing record(s) {missing} (truncated run?).")
+        # Mandatory footer: the canonical records in writer order, complete
+        # ("dos" is optional -- EPW 6.0 release writes it, develop/5.3.1 do not).
+        missing = [r for r in _EPW_FOOTER_MANDATORY if r not in footer_order]
+        if missing:
+            raise A2FParseError("epw_footer_incomplete", f"{path}: EPW footer missing record(s) {missing} (truncated run?).")
+        if footer_order != [r for r in _EPW_FOOTER_ORDER if r in footer_order]:
             raise A2FParseError("epw_footer_order", f"{path}: EPW footer records out of canonical order: {footer_order}.")
+        # Header-N vs data: N == (ncol-1)/2 normally. Known writer artifact: the
+        # EPW 6.0 a2f_iso path stamps the template's smearing count (e.g. 10)
+        # while writing a single smearing. Tolerate the mismatch ONLY when the
+        # complete footer independently confirms the data's N (its per-smearing
+        # records list exactly n_smearings values) -- truncation still dies at
+        # the missing-footer check above.
+        if header_n_values[0] != n_smearings:
+            confirm = footer_values.get("phonon smearing")
+            if confirm is not None and len(confirm) == n_smearings:
+                warnings_pending_header = A2FWarning(
+                    "epw_header_n_mismatch_tolerated",
+                    f"header declares N={header_n_values[0]} but the data block has N={n_smearings} "
+                    f"(1+2N columns), confirmed by the footer smearing count -- known EPW 6.0 "
+                    f"a2f_iso header template artifact.",
+                )
+            else:
+                raise A2FParseError(
+                    "epw_header_n_mismatch",
+                    f"{path}: header declares N={header_n_values[0]} smearings but the {ncol}-column block "
+                    f"implies N={n_smearings} (1+2N).",
+                )
+        else:
+            warnings_pending_header = None
+        if warnings_pending_header is not None:
+            warnings.append(warnings_pending_header)
         # Footer counts that encode N must also match.
         smearing_meV = footer_values.get("phonon smearing")
         for label in ("phonon smearing", "integrated el-ph coupling"):

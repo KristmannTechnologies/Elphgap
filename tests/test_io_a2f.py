@@ -9,6 +9,7 @@ A complete QE a2F.dos has the 'frequencies in Rydberg' header and a
 """
 
 import hashlib
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -358,12 +359,20 @@ def test_qe_lambda_nan_and_epw_footer_inf_rejected(tmp_path):
 # --- gate 4: mandatory + ordered records, strict value binding ------------- #
 
 def test_epw_header_n_must_match(tmp_path):
+    # Contract update 17.07. (real EPW 6.0 a2f_iso output, GO B): without a
+    # footer the file dies at the footer guard; with a complete footer whose
+    # smearing count CONFIRMS the data, a header-N template artifact is
+    # tolerated (warning); a footer that does NOT confirm stays fatal.
     for hn in (0, 2, 999999999):
         p = tmp_path / f"h{hn}.a2f"  # 3-column block => N=1, header claims otherwise
         p.write_text(f" w[meV] a2f and integrated 2*a2f/w for {hn} smearing values\n1.0 0.3 0.3\n2.0 0.1 0.4\n")
         with pytest.raises(A2FParseError) as e:
             read_a2f(str(p), fmt="epw")
-        assert e.value.code == "epw_header_n_mismatch" and e.value.exit_code == 2
+        assert e.value.code == "epw_footer_incomplete" and e.value.exit_code == 2
+    w = np.array([1.0, 2.0, 3.0])
+    p = _write_epw(tmp_path, "h10.a2f", w, [np.array([0.3, 0.1, 0.05])], [0.5], header_n=10)
+    spec = read_a2f(p, fmt="epw")
+    assert [x.code for x in spec.warnings].count("epw_header_n_mismatch_tolerated") == 1
 
 
 def test_epw_header_missing(tmp_path):
@@ -447,3 +456,62 @@ def test_epw_pending_value_not_collected_across_comments(tmp_path):
     with pytest.raises(A2FParseError) as e:
         read_a2f(str(p), fmt="epw")
     assert e.value.code == "footer_malformed"
+
+
+# ---- EPW 6.0 release writer (real pod output 17.07.2026, GO B): a2f_iso ----
+_EPW60 = str(Path(__file__).parent / "data" / "pb_epw60_a2f_iso.a2f")
+
+
+def test_epw60_real_a2f_iso_parses_with_tolerated_header(tmp_path):
+    # Real EPW-6.0 output: header stamps N=10 (template), data has N=1;
+    # complete 6-record footer incl. the new "DOS (eV)" confirms N=1.
+    spec = read_a2f(_EPW60)
+    assert spec.fmt == "epw" and spec.n_smearings == 1
+    assert spec.primary_a2f_columns == [2]
+    assert [w.code for w in spec.warnings].count("epw_header_n_mismatch_tolerated") == 1
+    # lambda cross-check vs the file's own cumulative column (writer float32 output).
+    lam = 2.0 * np.trapezoid(spec.a2f / spec.omega, spec.omega)
+    assert abs(lam - spec.lambda_from_file[2]) / spec.lambda_from_file[2] < 0.02
+
+
+def test_epw60_dos_footer_out_of_order_rejected(tmp_path):
+    lines = Path(_EPW60).read_text().splitlines()
+    dos = next(i for i, l in enumerate(lines) if l.lower().startswith("dos (ev)"))
+    lines.insert(dos - 2, lines.pop(dos))  # DOS vor "Electron smearing" ziehen
+    p = tmp_path / "reordered.a2f"
+    p.write_text("\n".join(lines) + "\n")
+    with pytest.raises(A2FParseError) as e:
+        read_a2f(str(p))
+    assert e.value.code == "epw_footer_order" and e.value.exit_code == 2
+
+
+def test_epw60_truncation_still_fatal_despite_header_tolerance(tmp_path):
+    lines = Path(_EPW60).read_text().splitlines()
+    cut = next(i for i, l in enumerate(lines) if l.lstrip().lower().startswith("integrated"))
+    p = tmp_path / "trunc.a2f"
+    p.write_text("\n".join(lines[:cut]) + "\n")
+    with pytest.raises(A2FParseError) as e:
+        read_a2f(str(p))
+    assert e.value.code == "epw_footer_incomplete" and e.value.exit_code == 2
+
+
+def test_epw_header_n_mismatch_without_footer_confirmation_rejected(tmp_path):
+    # Header N=10, data N=1, but footer smearing list has 2 values -> no
+    # confirmation -> the mismatch stays fatal.
+    om = [1.0, 2.0, 3.0]
+    a = [0.1, 0.2, 0.1]
+    p = _write_epw(tmp_path, "bad.a2f", om, [a], smearings=[0.1, 0.2], header_n=10)
+    with pytest.raises(A2FParseError) as e:
+        read_a2f(p)
+    assert e.value.code in ("epw_header_n_mismatch", "epw_smearing_count_mismatch")
+    assert e.value.exit_code == 2
+
+
+def test_epw_dos_footer_nonfinite_rejected(tmp_path):
+    lines = Path(_EPW60).read_text().splitlines()
+    lines = [("DOS (eV)   NaN" if l.lower().startswith("dos (ev)") else l) for l in lines]
+    p = tmp_path / "nan_dos.a2f"
+    p.write_text("\n".join(lines) + "\n")
+    with pytest.raises(A2FParseError) as e:
+        read_a2f(str(p))
+    assert e.value.exit_code == 2
