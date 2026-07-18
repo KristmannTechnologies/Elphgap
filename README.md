@@ -1,6 +1,6 @@
 # elphgap — GPU-accelerated anisotropic Migdal-Eliashberg gap solver
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21284954.svg)](https://doi.org/10.5281/zenodo.21284954)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21284953.svg)](https://doi.org/10.5281/zenodo.21284953)
 
 **elphgap** solves the (an)isotropic Migdal-Eliashberg gap equations on the
 imaginary (Matsubara) axis for phonon-mediated superconductors — in
@@ -222,9 +222,9 @@ studies.
 
 ## Cite
 
-See `CITATION.cff`. The Zenodo DOI badge above is the **v0.1.0** version DOI; a
-new version DOI is minted at each release (the concept DOI resolves to all
-versions). Please also cite the methods
+See `CITATION.cff`. The Zenodo DOI badge above is the **concept DOI**, which
+always resolves to the latest release; each version also gets its own DOI
+(v0.1.1: 10.5281/zenodo.21433591). Please also cite the methods
 this builds on: Allen & Dynes (1975), Margine & Giustino PRB 87, 024505
 (2013) for the anisotropic ME formulation, and EPW/IsoME if you use them to
 generate inputs or cross-checks. If you run the BETE-NET database

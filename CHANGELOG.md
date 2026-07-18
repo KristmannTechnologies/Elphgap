@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.1.1 — 2026-07-17
+## v0.1.1 — 2026-07-18
 
 ### Added — command line and α²F I/O
 - **Real EPW 6.0 release layout.** Validated end-to-end against the official
